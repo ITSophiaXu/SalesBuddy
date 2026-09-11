@@ -67,6 +67,14 @@ DNS、NSG/防火墙与证书签发需在真实环境验证。公网使用 HTTPS�
 
 ## 5. 发布记录与回退
 
+### 升级到 1.3
+
+升级保留 `.deploy.env`、`.private/`、`copilot_home` 和 `copilot_cache`，不要重新登录或删除持久卷。发布分支包含连续对话页面、`/api/chat` 以及既有免登录、宿主端口和 CLI 缓存配置。保留旧镜像，使用新的 `MOTIVE_RELEASE` 构建，成功后再替换应用容器。
+
+若已有 Cloudflare 隧道转发至 Nginx `127.0.0.1:4175`，应用继续绑定 `127.0.0.1:4174`。`deploy/nginx-tunnel.conf` 为这一路径提供配置：`/api/chat` 与 `/api/generate` 共用限流，代理等待时间为 150 秒，避免先于 120 秒模型超时截断请求。该配置依赖仅绑定回环地址的受信任代理，会改写 Host/Origin，不适用于直接公网监听；所有匿名访问者均可消耗配置账户的模型额度，限流不能替代身份认证。
+
+在已有对应站点的 VM 上，先备份 `/etc/nginx/conf.d/motive-tunnel.conf`，将仓库中的配置安装至同一路径，执行 `nginx -t` 成功后 reload Nginx。不要重启 Cloudflare 隧道；Quick Tunnel 在进程重启后可能更换链接。新版本应通过原公网入口分别执行普通对话和交付物生成。
+
 保存 `.deploy.env` 的发行标签、镜像 ID 及实际依赖锁文件：
 
 ```sh
@@ -80,4 +88,4 @@ docker compose --env-file .deploy.env cp app:/app/package-lock.json .private/dep
 
 目前为单工作区试点架构：共享访问密码、浏览器本地业务数据、浏览器日程检查。没有多用户隔离、服务器客户数据库、后台持续任务或消息发送渠道。重启清除 Web 登录会话，但持久卷保留 Copilot 身份。重要交付物应导出备份。
 
-已完成 44 项本地测试、Compose 配置校验、海报图片生成及目视检查。未完成镜像构建、SDK/CLI 安装与联网调用、VM 上线和真实浏览器下载验收。
+本地测试、Compose 配置校验与海报图片生成不能替代上线验收。每次发布都需在目标环境确认镜像、SDK/CLI 登录、真实聊天与生成接口，并从实际公网入口检查页面和浏览器下载。

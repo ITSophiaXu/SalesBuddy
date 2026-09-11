@@ -4,7 +4,7 @@ $outputDirectory = Join-Path $projectRoot 'artifacts'
 New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 $releaseName = 'motive-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.tar.gz'
 $archivePath = Join-Path $outputDirectory $releaseName
-$files = @('index.html', 'styles.css', 'cowork.css', 'cowork.js', 'cowork-ui.js', 'app.js', 'ai-client.js', 'poster.js', 'domain.js', 'data.js', 'server.js', 'package.json', '.gitignore', '.gitattributes', '.env.example', '.dockerignore', 'Dockerfile', 'compose.yaml', 'compose.tls.yaml', 'assets', 'server', 'deploy', 'tests', 'scripts', 'README.md', 'PRODUCT.md', 'DEPLOYMENT.md', 'artifacts/motive-posters-preview.png', 'artifacts/motive-poster-portrait.png', 'artifacts/motive-poster-portrait.svg', 'artifacts/motive-poster-square.png', 'artifacts/motive-poster-square.svg', 'artifacts/motive-poster-story-ar.png', 'artifacts/motive-poster-story-ar.svg')
+$files = @('index.html', 'styles.css', 'cowork.css', 'cowork.js', 'cowork-ui.js', 'chat-ui.js', 'chat.css', 'app.js', 'ai-client.js', 'poster.js', 'domain.js', 'data.js', 'server.js', 'package.json', '.gitignore', '.gitattributes', '.env.example', '.dockerignore', 'Dockerfile', 'compose.yaml', 'compose.tls.yaml', 'assets', 'server', 'deploy', 'tests', 'scripts', 'README.md', 'PRODUCT.md', 'Motive-产品Spec-v1.0.md', 'DEPLOYMENT.md', 'artifacts/motive-posters-preview.png', 'artifacts/motive-poster-portrait.png', 'artifacts/motive-poster-portrait.svg', 'artifacts/motive-poster-square.png', 'artifacts/motive-poster-square.svg', 'artifacts/motive-poster-story-ar.png', 'artifacts/motive-poster-story-ar.svg')
 foreach ($relative in $files) {
     if (-not (Test-Path -LiteralPath (Join-Path $projectRoot $relative))) { throw "Missing release file: $relative" }
 }

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {draftArtifact} from '../domain.js';
+import {normalizeChatRequest,demoChatReply} from '../server/chat.js';
 
 // Component/controller tests with an in-memory document adapter. This does not
 // launch or control a browser and is intentionally not visual acceptance testing.
@@ -33,8 +34,17 @@ globalThis.FormData = class { constructor(form) { this.data = form.values; } *[S
 let failGeneration=false;
 let holdGeneration=null;
 const requests=[];
+const chatRequests=[];
+let holdChat=null,failChat=false;
+let aiStatus={provider:'demo',ready:true,model:'Test fixture',message:'Test fixture'};
 globalThis.fetch=async(url,options={})=>{
-  if(url==='/api/status')return Response.json({provider:'demo',ready:true,model:'Test fixture',message:'Test fixture'});
+  if(url==='/api/status')return Response.json(aiStatus);
+  if(url==='/api/chat'){
+    const payload=JSON.parse(options.body);chatRequests.push(payload);
+    if(holdChat)await holdChat;
+    if(failChat)return Response.json({error:{code:'SDK_NOT_INSTALLED',message:'尚未安装 Copilot SDK'}},{status:503});
+    return Response.json(demoChatReply(normalizeChatRequest(payload)));
+  }
   if(url!=='/api/generate')throw new Error('Unexpected request');
   const r=JSON.parse(options.body);requests.push(r);
   if(holdGeneration)await holdGeneration;
@@ -56,7 +66,7 @@ test('新工作区自动整理客户工作，可加载原页面及新的工作�
   assert.equal(currentState().tasks.length, 3);
   assert.equal(currentState().works.length, 8);
   assert.equal(currentState().artifacts.filter(a=>a.kind==='journey').length,8);
-  for (const page of ['home','work','inbox','workspace','customers','inventory','campaigns','automations','deliverables','knowledge','settings']) {
+  for (const page of ['home','chat','work','inbox','workspace','customers','inventory','campaigns','automations','deliverables','knowledge','settings']) {
     navigate(page);
     assert.match(main(), /<main class="main">/);
     assert.doesNotMatch(main(), />NaN</);
@@ -187,7 +197,7 @@ test('客户工作完整走通：调整时段、审核材料、记录发送与�
   await click('cw-strategy',{id});
   let s=currentState(),w=s.works.find(w=>w.id===id),poster=s.artifacts.find(a=>a.id===w.posterId);
   await click('artifact',{id:poster.id});element('#poster-form').values={...poster.poster};await click('poster-approve');await click('close-modal');
-  await click('cw-activity',{id});assert.ok(currentState().works.find(w=>w.id===id).decisions.activity);
+  await click('cw-activity',{id});assert.ok(currentState().works.find(w=>w.id===id).decisions.activity,element('#toast-root').innerHTML);
   await click('cw-outbound',{id});await submit('cw-outbound-form',{confirmed:'on',note:'已实际发送此时段邀请。'},{id});
   await submit('cw-feedback-form',{type:'reply',message:'我再考虑一下。',outcome:'unsure',slotId:''},{id});
   await click('cw-reservation',{id});await submit('cw-reservation-form',{confirmed:'on',reference:'UI-R1'},{id});
@@ -216,9 +226,105 @@ test('停止运行中的生成，迟到的结果不会被保存为完成',async(
 });
 
 test('从快速咨询入口进入完整交接工作，城市与预算不被补写为猜测',async()=>{
-  await click('cw-quick-lead');assert.match(modal(),/仅凭联系方式/);
+  await click('cw-quick-lead');assert.match(modal(),/仅凭联系方式/,element('#toast-root').innerHTML);
   await submit('cw-lead-form',{name:'',contact:'new-qa@example.com',market:'GB',channel:'Email',need:''});
   const c=currentState().customers.find(c=>c.email==='new-qa@example.com');assert.equal(c.budgetUnknown,true);assert.equal(c.city,'城市待确认');
   assert.equal(currentState().visitSlots.some(s=>s.city==='城市待确认'),false);
   navigate('work');assert.match(main(),/补齐需求/);
+});
+
+const sayChat=async text=>{element('#cowork-chat-input').value=text;await submit('cowork-chat-form',{});navigate('chat');};
+const latestChat=()=>currentState().conversations[0];
+
+test('首页首屏与全局导航都有对话入口，普通问答连续保存而不产生交付物',async()=>{
+  navigate('home');assert.ok(main().indexOf('id="cowork-home-input"')<main().indexOf('class="cw-objectives"'));assert.match(main(),/chat-entry-nav/);
+  await click('chat-new');navigate('chat');
+  const before=currentState();await sayChat('你好');await sayChat('为什么客户试驾后不回复？');
+  assert.equal(latestChat().messages.length,4);assert.equal(latestChat().customerId,'');
+  assert.equal(currentState().artifacts.length,before.artifacts.length);assert.equal(currentState().tasks.length,before.tasks.length);
+  assert.equal(chatRequests.at(-1).history.length,2);assert.match(chatRequests.at(-1).history[0].content,/你好/);
+  assert.match(main(),/为什么客户试驾后不回复/);
+});
+test('在自然对话中提到唯一客户可带入上下文，讨论海报不会生成海报',async()=>{
+  await click('chat-new');navigate('chat');const count=currentState().artifacts.length;
+  await sayChat('Sarah 现在最需要解决什么问题？');
+  assert.equal(latestChat().customerId,'c1');assert.equal(chatRequests.at(-1).context.customer.id,'c1');
+  await sayChat('海报怎么设计？');assert.equal(currentState().artifacts.length,count);
+});
+test('明确要求成果时在聊天内生成文案和海报，可继续改语言并保留上一版',async()=>{
+  const before=currentState().artifacts.length;await sayChat('帮 Sarah 做一张周末体验邀请海报');
+  const first=latestChat().messages.at(-1);assert.ok(first.artifactId);assert.ok(first.posterId);
+  assert.equal(currentState().artifacts.length,before+2);assert.match(main(),/class="chat-artifact/);assert.equal(location.hash,'#chat');
+  await sayChat('换成阿拉伯语，短一点');
+  const next=latestChat().messages.at(-1);assert.notEqual(next.artifactId,first.artifactId);
+  assert.equal(requests.at(-1).customer.language,'ar');assert.ok(requests.at(-1).previousArtifact);
+  assert.ok(currentState().artifacts.some(a=>a.id===first.artifactId));
+  assert.equal(currentState().artifacts.find(a=>a.id===next.posterId).language,'ar');
+});
+test('生成后继续问原因只回答，之后缩短解释也不会误改成果',async()=>{
+  const before=currentState().artifacts.length;await sayChat('为什么海报要这样设计？');await sayChat('短一点');
+  assert.equal(currentState().artifacts.length,before);assert.equal(latestChat().messages.at(-1).mode,'reply');
+});
+test('文本活动请求不强制增加海报，客户联系事实不受聊天影响',async()=>{
+  const before=currentState(),contact=before.customers.find(c=>c.id==='c1').lastContact;
+  await sayChat('帮我写一份活动方案，只要文字，不要海报');
+  const m=latestChat().messages.at(-1);assert.ok(m.artifactId);assert.equal(m.posterId,undefined);
+  assert.equal(currentState().artifacts.length,before.artifacts.length+1);assert.equal(currentState().customers.find(c=>c.id==='c1').lastContact,contact);
+});
+test('缺少对象时先问一句，选择客户后继续原请求且不混入另一客户历史',async()=>{
+  await click('chat-new');navigate('chat');const before=currentState().tasks.length;
+  await sayChat('帮我写一段跟进话术');assert.equal(latestChat().messages.at(-1).mode,'clarify');assert.equal(currentState().tasks.length,before);
+  listeners.change({target:{id:'cowork-chat-customer',value:'c3',dataset:{}}});await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(latestChat().customerId,'c3');assert.ok(latestChat().messages.at(-1).artifactId);assert.equal(chatRequests.at(-1).history.length,0);
+});
+test('发送前显示连接原因，检查恢复保留草稿，聊天失败可重试且不重复用户消息',async()=>{
+  await click('chat-new');navigate('chat');
+  const previousStatus=aiStatus,requestsBefore=chatRequests.length;
+  aiStatus={provider:'copilot',ready:false,code:'SDK_NOT_INSTALLED',message:'尚未安装 Copilot SDK'};
+  await click('ai-check');assert.match(main(),/缺少 Copilot SDK/);assert.equal(chatRequests.length,requestsBefore);
+  listeners.input({target:{id:'cowork-chat-input',value:'还没发出的客户问题',dataset:{}}});
+  await click('ai-status');assert.match(modal(),/SDK_NOT_INSTALLED/);assert.match(modal(),/安装项目依赖/);
+  aiStatus={provider:'copilot',ready:false,code:'COPILOT_AUTH_REQUIRED',message:'Copilot 尚未登录'};
+  await click('ai-check');assert.match(element('#cowork-chat-connection').innerHTML,/Copilot 尚未登录/);assert.match(modal(),/运行 Motive 的账户/);assert.doesNotMatch(modal(),/SDK_NOT_INSTALLED/);
+  aiStatus={provider:'copilot',ready:true,code:'READY',message:'Copilot 已连接'};
+  await click('ai-check');assert.equal(element('#cowork-chat-connection').innerHTML,'');
+  await click('close-modal');navigate('chat');assert.match(main(),/还没发出的客户问题/);
+  aiStatus=previousStatus;await click('ai-check');
+  failChat=true;await sayChat('你好');
+  const failed=latestChat().messages.at(-1);assert.equal(failed.status,'failed');assert.match(failed.content,/尚未安装/);
+  failChat=false;await click('chat-retry',{id:failed.id});assert.equal(latestChat().messages.length,2);assert.equal(latestChat().messages.at(-1).status,'done');
+});
+test('停止聊天丢弃迟到的回复，输入中的下一条草稿保留',async()=>{
+  let release;holdChat=new Promise(resolve=>{release=resolve;});
+  const operation=sayChat('你好');await new Promise(resolve=>setImmediate(resolve));
+  listeners.input({target:{id:'cowork-chat-input',value:'还想问一个问题',dataset:{}}});
+  await click('chat-stop');release();await operation;holdChat=null;
+  assert.equal(latestChat().messages.at(-1).status,'cancelled');assert.match(main(),/还想问一个问题/);
+});
+test('聊天生成成果时也能停止，不保存迟到的成果',async()=>{
+  await click('chat-new');navigate('chat');let release;holdGeneration=new Promise(resolve=>{release=resolve;});
+  const before=currentState().artifacts.length,operation=sayChat('帮 Sarah 写一段话术');await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(latestChat().messages.at(-1).status,'creating');await click('chat-stop');release();await operation;holdGeneration=null;
+  assert.equal(latestChat().messages.at(-1).status,'cancelled');assert.equal(currentState().artifacts.length,before);
+});
+test('聊天等待中客户资料变化，原结果不继续生成旧材料',async()=>{
+  await click('chat-new');navigate('chat');let release;holdChat=new Promise(resolve=>{release=resolve;});
+  const operation=sayChat('帮 Sarah 写一段跟进话术');await new Promise(resolve=>setImmediate(resolve));
+  await submit('memory-form',{memory:'新确认：下周才能联系，请重新安排。'},{id:'c1'});
+  const before=currentState().tasks.length;release();await operation;holdChat=null;
+  assert.equal(latestChat().messages.at(-1).status,'stale');assert.equal(currentState().tasks.length,before);
+});
+test('对话提到另一位明确客户时开启独立上下文，不混合原客户历史',async()=>{
+  const old=latestChat().id;await sayChat('Marcus 现在有什么顾虑？');
+  assert.notEqual(latestChat().id,old);assert.equal(latestChat().customerId,'c3');assert.equal(chatRequests.at(-1).history.length,0);assert.equal(chatRequests.at(-1).context.customer.id,'c3');
+});
+test('讨论修订时原海报被人工编辑，不覆盖员工刚改好的版本',async()=>{
+  await sayChat('帮 Marcus 做一张海报');const first=latestChat().messages.at(-1);
+  let release;holdChat=new Promise(resolve=>{release=resolve;});
+  const operation=sayChat('把海报标题改短一点');await new Promise(resolve=>setImmediate(resolve));
+  await click('artifact',{id:first.posterId});const p=currentState().artifacts.find(a=>a.id===first.posterId);
+  element('#poster-form').values={...p.poster,headline:'Employee verified headline'};await click('poster-save');await click('close-modal');
+  const before=currentState().artifacts.length;release();await operation;holdChat=null;
+  assert.equal(latestChat().messages.at(-1).status,'stale');assert.equal(currentState().artifacts.length,before);
+  assert.equal(currentState().artifacts.find(a=>a.id===first.posterId).poster.headline,'Employee verified headline');
 });
