@@ -75,6 +75,16 @@ DNS、NSG/防火墙与证书签发需在真实环境验证。公网使用 HTTPS�
 
 在已有对应站点的 VM 上，先备份 `/etc/nginx/conf.d/motive-tunnel.conf`，将仓库中的配置安装至同一路径，执行 `nginx -t` 成功后 reload Nginx。不要重启 Cloudflare 隧道；Quick Tunnel 在进程重启后可能更换链接。新版本应通过原公网入口分别执行普通对话和交付物生成。
 
+### 对话格式与实时执行过程
+
+前端使用锁定版本的 Marked 模块渲染回复，构建和发布包必须同时包含 `markdown.js`、`execution.js`、`package-lock.json`。服务器只开放 Marked 的单个浏览器模块，不开放整个 `node_modules`。
+
+`/api/chat` 与 `/api/generate` 保留原 JSON 接口；请求头 `Accept: application/x-ndjson` 启用逐行 JSON 事件流。公开事件为 `progress`、`reply`、`heartbeat`、`result` 和 `error`，每条以换行结束。只有 `result` 是最终已校验结果；HTTP 200 仅表示流已建立，仍需处理流内 `error`。聊天只提取顶层 `reply` 字段，交付物生成只显示进度，完整成果经校验后一起返回。SDK 私有推理、工具参数和原始事件对象均不转发。
+
+Copilot 会话需要支持 `streaming: true` 及事件订阅；当前 Azure 运行版本为 SDK 1.0.13 / CLI 1.0.83。代码不会把缺少实时事件支持的 SDK 悄悄降级为假进度。代理必须关闭响应缓冲、缓存及流压缩；模板已设置 `proxy_buffering off`、`proxy_cache off`、`gzip off`，应用返回 `X-Accel-Buffering: no`，等待期间每 10 秒发送心跳。其他入口代理也需允许长连接，不能等收齐回复才转发。
+
+上线时通过实际公网入口确认：最终结果前已收到进度与回答片段；普通问答和成果生成均能完成；停止或断网不会将未完成草稿标记为成功。
+
 保存 `.deploy.env` 的发行标签、镜像 ID 及实际依赖锁文件：
 
 ```sh

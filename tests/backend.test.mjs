@@ -36,7 +36,7 @@ test('营销活动必须产出可渲染的海报文案',()=>{
 });
 test('SDK 每个任务创建独立会话、拒绝工具权限并在结束时清理',async()=>{
   const configs=[],prompts=[];let destroyed=0,started=0;
-  const generator=new CopilotGenerator({model:'test-model',clientFactory:async()=>({start:async()=>{started++;},stop:async()=>{},getAuthStatus:async()=>({isAuthenticated:true}),createSession:async config=>{configs.push(config);return {sendAndWait:async arg=>{prompts.push(arg.prompt);return {data:{content:JSON.stringify(output())}};},destroy:async()=>{destroyed++;}};}})});
+  const generator=new CopilotGenerator({model:'test-model',clientFactory:async()=>({start:async()=>{started++;},stop:async()=>{},getAuthStatus:async()=>({isAuthenticated:true}),createSession:async config=>{configs.push(config);return {sendAndWait:async arg=>{prompts.push(arg.prompt);return {data:{content:JSON.stringify(output())}};},disconnect:async()=>{destroyed++;}};}})});
   const req=normalizeRequest(input());req.previousArtifact={title:'旧标题',sections:[{label:'旧版',text:'上一版内容'}]};
   const first=await generator.generate(req);await generator.generate(req);
   assert.equal(first.engine,'copilot');assert.equal(started,1);assert.equal(configs.length,2);assert.equal(destroyed,2);assert.deepEqual(configs[0].availableTools,[]);
@@ -45,7 +45,7 @@ test('SDK 每个任务创建独立会话、拒绝工具权限并在结束时清�
 });
 test('并发限制与取消不会占用后续任务名额',async()=>{
   let release;const waiting=new Promise(r=>{release=r;});let destroyed=0,aborted=0;
-  const generator=new CopilotGenerator({maxConcurrent:1,clientFactory:async()=>({start:async()=>{},stop:async()=>{},createSession:async()=>({sendAndWait:async()=>{await waiting;return {data:{content:JSON.stringify(output())}};},abort:async()=>{aborted++;},destroy:async()=>{destroyed++;}})})});
+  const generator=new CopilotGenerator({maxConcurrent:1,clientFactory:async()=>({start:async()=>{},stop:async()=>{},createSession:async()=>({sendAndWait:async()=>{await waiting;return {data:{content:JSON.stringify(output())}};},abort:async()=>{aborted++;},disconnect:async()=>{destroyed++;}})})});
   const controller=new AbortController();const pending=generator.generate(normalizeRequest(input()),{signal:controller.signal});
   await new Promise(resolve=>setImmediate(resolve));
   await assert.rejects(generator.generate(normalizeRequest(input())),e=>e.code==='BUSY');

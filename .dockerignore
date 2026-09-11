@@ -1,5 +1,8 @@
 *
 !package.json
+!package-lock.json
+!markdown.js
+!execution.js
 !Dockerfile
 !index.html
 !styles.css

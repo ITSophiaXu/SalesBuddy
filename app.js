@@ -6,6 +6,7 @@ import {createPoster,buildPosterSVG,normalizePoster,posterToPNG,POSTER_SIZES,POS
 import {initializeCowork,updateCustomerContext,isArtifactCurrent,createMorningBrief,workflowContext,businessContext,logWork} from './cowork.js';
 import {createCoworkUI} from './cowork-ui.js';
 import {createChatUI,initializeConversations} from './chat-ui.js';
+import {executionStages} from './execution.js';
 
 const STORAGE = 'motive-workspace-v3';
 const icons = {
@@ -203,7 +204,13 @@ async function completeTask(task){
   const controller=new AbortController();runningRequests.set(task.id,controller);
   task.events.push({title:'已向模型服务提交请求',detail:'等待生成结果；可以停止。',at:new Date().toISOString()});save();safeRender();
   try{
-    const a=await generateAIArtifact(generationPayload(task),{signal:controller.signal});
+    const a=await generateAIArtifact(generationPayload(task),{signal:controller.signal,onEvent:event=>{
+      if(task.status!=='running'||event.type!=='progress')return;
+      const step=executionStages[event.stage];if(!step)return;
+      task.events.push({...step,at:new Date().toISOString()});
+      chatUI.onTaskProgress(task,event);
+      if(ui.page!=='chat'){save();safeRender();}
+    }});
     const stale=task.status==='stale'||task.customerRevision!==getCustomer(task.customerId).contextVersion||task.cohort?.some(x=>getCustomer(x.id).contextVersion!==x.revision);
     if(task.status==='cancelled'||stale){if(stale){task.status='stale';task.error='生成期间客户资料变化，旧结果未加入有效交付物。';}save();safeRender();return null;}
     Object.assign(a,{customerRevision:task.customerRevision,workId:task.workId,cohort:task.cohort});

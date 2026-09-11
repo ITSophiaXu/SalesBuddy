@@ -2,12 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {draftArtifact} from '../domain.js';
 import {normalizeChatRequest,demoChatReply} from '../server/chat.js';
+import {setImmediate as tick} from 'node:timers/promises';
 
 // Component/controller tests with an in-memory document adapter. This does not
 // launch or control a browser and is intentionally not visual acceptance testing.
 const elements = new Map();
 function element(selector) {
-  if (!elements.has(selector)) elements.set(selector, { innerHTML: '', style: {}, value: '', dataset: {}, focus() {}, isConnected: true });
+  if (!elements.has(selector)) elements.set(selector, { innerHTML: '', style: {}, value: '', dataset: {}, focus() {}, isConnected: true, querySelector(child){return element(selector+' '+child);} });
   return elements.get(selector);
 }
 const listeners = {};
@@ -21,6 +22,7 @@ globalThis.document = {
     return element(selector);
   },
   querySelectorAll() { return []; },
+  getElementById(id) {return element('#'+id);},
   addEventListener(name, fn) { listeners[name] = fn; }
 };
 globalThis.window = { addEventListener(name, fn) { windowListeners[name] = fn; }, scrollTo() {} };
@@ -36,11 +38,13 @@ let holdGeneration=null;
 const requests=[];
 const chatRequests=[];
 let holdChat=null,failChat=false;
+let streamChat=null,streamGeneration=null;
 let aiStatus={provider:'demo',ready:true,model:'Test fixture',message:'Test fixture'};
 globalThis.fetch=async(url,options={})=>{
   if(url==='/api/status')return Response.json(aiStatus);
   if(url==='/api/chat'){
     const payload=JSON.parse(options.body);chatRequests.push(payload);
+    if(streamChat)return streamChat(payload);
     if(holdChat)await holdChat;
     if(failChat)return Response.json({error:{code:'SDK_NOT_INSTALLED',message:'尚未安装 Copilot SDK'}},{status:503});
     return Response.json(demoChatReply(normalizeChatRequest(payload)));
@@ -51,7 +55,8 @@ globalThis.fetch=async(url,options={})=>{
   if(failGeneration)return Response.json({error:{code:'GENERATION_FAILED',message:'测试模型服务不可用'}},{status:502});
   const artifact=draftArtifact(r.kind,r.customer,r.vehicles,r.prompt,r.knowledge,{preferredVehicleId:r.preferredVehicleId,campaign:r.campaign,workspaceName:r.workspaceName,workflow:r.workflow,businessContext:r.businessContext,needsPoster:r.needsPoster});
   if(r.kind==='campaign')artifact.posterBrief={kicker:'FAMILY DRIVE',headline:'Room for what matters.',subheadline:'Find your next drive.',details:'Appointment details to be confirmed.',cta:'Request a test drive',disclaimer:'Concept. Confirm local details.'};
-  return Response.json({artifact:{...artifact,engine:'demo'}});
+  const data={artifact:{...artifact,engine:'demo'}};
+  return streamGeneration?streamGeneration(data):Response.json(data);
 };
 await import('../app.js');
 const currentState = () => JSON.parse(storage.get('motive-workspace-v3'));
@@ -327,4 +332,65 @@ test('讨论修订时原海报被人工编辑，不覆盖员工刚改好的版�
   const before=currentState().artifacts.length;release();await operation;holdChat=null;
   assert.equal(latestChat().messages.at(-1).status,'stale');assert.equal(currentState().artifacts.length,before);
   assert.equal(currentState().artifacts.find(a=>a.id===first.posterId).poster.headline,'Employee verified headline');
+});
+
+function controlledReplyStream(){
+  let controller,closed=false;
+  const response=new Response(new ReadableStream({start(c){controller=c;}}),{headers:{'Content-Type':'application/x-ndjson'}});
+  const emit=event=>controller.enqueue(new TextEncoder().encode(JSON.stringify(event)+'\n'));
+  const close=()=>{if(!closed){closed=true;controller.close();}};
+  return {response,emit,close,finish(data){emit({type:'result',data});close();}};
+}
+test('流式回复仅刷新消息，粗体即时呈现，不保存草稿且保留输入与滚动位置',async t=>{
+  await click('chat-new');navigate('chat');
+  const channel=controlledReplyStream();streamChat=()=>channel.response;
+  t.after(()=>{streamChat=null;document.activeElement=null;channel.close();});
+  const operation=sayChat('你好，请用粗体回答');await tick();
+  const message=latestChat().messages.at(-1),before=main();
+  const input=element('#cowork-chat-input');Object.assign(input,{id:'cowork-chat-input',value:'下一条尚未发送',selectionStart:2,selectionEnd:4});
+  input.focus=()=>{document.activeElement=input;};input.setSelectionRange=(start,end)=>{input.selectionStart=start;input.selectionEnd=end;};
+  document.activeElement=input;listeners.input({target:input});
+  Object.assign(element('.chat-messages'),{scrollTop:300,scrollHeight:2000,clientHeight:700});
+  channel.emit({type:'progress',stage:'responding',elapsedMs:15});
+  channel.emit({type:'reply',text:'**买了 Model Y '});await tick();
+  channel.emit({type:'reply',text:'以后，能否方便、稳定地给车充电。**'});await tick();
+  const article=element('#chat-message-'+message.id).innerHTML;
+  assert.match(article,/<strong>买了 Model Y 以后，能否方便、稳定地给车充电。<\/strong>/);
+  assert.match(article,/执行过程/);assert.match(article,/草稿/);
+  assert.equal(main(),before);assert.equal(latestChat().messages.at(-1).content,'');
+  assert.equal(document.activeElement,input);assert.equal(input.value,'下一条尚未发送');assert.equal(element('.chat-messages').scrollTop,300);
+  channel.finish({mode:'reply',reply:'**买了 Model Y 以后，能否方便、稳定地给车充电。**',artifactRequest:null,engine:'copilot'});
+  await operation;
+  assert.equal(latestChat().messages.at(-1).status,'done');assert.match(main(),/<strong>买了 Model Y/);
+  assert.match(main(),/下一条尚未发送/);assert.equal(input.selectionStart,2);assert.equal(input.selectionEnd,4);assert.equal(element('.chat-messages').scrollTop,300);
+});
+test('流式内容停止后不采用迟到的文本或结果',async t=>{
+  await click('chat-new');navigate('chat');
+  const channel=controlledReplyStream();streamChat=()=>channel.response;
+  t.after(()=>{streamChat=null;channel.close();});
+  const operation=sayChat('你好');await tick();
+  channel.emit({type:'reply',text:'尚未完成的内容'});await tick();
+  await click('chat-stop');
+  channel.emit({type:'reply',text:'迟到内容'});
+  channel.finish({mode:'reply',reply:'迟到的完整答案',artifactRequest:null,engine:'copilot'});await operation;
+  assert.equal(latestChat().messages.at(-1).status,'cancelled');
+  assert.doesNotMatch(latestChat().messages.at(-1).content,/尚未完成|迟到/);
+  assert.equal(latestChat().messages.at(-1).execution.at(-1).stage,'stopped');
+});
+test('对话生成交付物时实时展示 SDK 进度并保存完成记录',async t=>{
+  await click('chat-new');navigate('chat');
+  const channel=controlledReplyStream();let finalData;
+  streamGeneration=data=>{finalData=data;return channel.response;};
+  t.after(()=>{streamGeneration=null;channel.close();});
+  const operation=sayChat('帮 Sarah 写一段简短跟进话术');await tick();
+  const message=latestChat().messages.at(-1);assert.equal(message.status,'creating');
+  channel.emit({type:'progress',stage:'connecting',elapsedMs:0});
+  channel.emit({type:'progress',stage:'responding',elapsedMs:20});await tick();
+  assert.match(element('#chat-message-'+message.id).innerHTML,/成果准备 · 正在接收模型输出/);
+  channel.finish(finalData);await operation;
+  const completed=latestChat().messages.at(-1);
+  assert.equal(completed.status,'done');assert.ok(completed.artifactId);
+  assert.ok(completed.execution.some(e=>e.stage==='responding'&&e.phase==='artifact'));
+  assert.equal(completed.execution.at(-1).stage,'saved');
+  assert.ok(currentState().tasks.find(task=>task.id===completed.taskId).events.some(event=>event.title==='正在接收模型输出'));
 });

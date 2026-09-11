@@ -5,9 +5,11 @@ import {createAuth} from './auth.js';
 import {AppError,normalizeRequest} from './protocol.js';
 import {draftArtifact} from '../domain.js';
 import {normalizeChatRequest,demoChatReply} from './chat.js';
+import {createEventStream} from './events.js';
 
 const root = new URL('../',import.meta.url);
 const files = new Map([
+  ['/markdown.js','markdown.js'],['/execution.js','execution.js'],['/node_modules/marked/lib/marked.esm.js','node_modules/marked/lib/marked.esm.js'],
   ['/','index.html'],['/index.html','index.html'],['/styles.css','styles.css'],['/app.js','app.js'],
   ['/domain.js','domain.js'],['/data.js','data.js'],['/ai-client.js','ai-client.js'],['/poster.js','poster.js'],['/cowork.js','cowork.js'],['/cowork-ui.js','cowork-ui.js'],['/cowork.css','cowork.css'],['/chat-ui.js','chat-ui.js'],['/chat.css','chat.css'],['/assets/favicon.svg','assets/favicon.svg']
 ]);
@@ -68,17 +70,23 @@ export function createApplication({config,generator}) {
         const chatting=url.pathname==='/api/chat';
         const request=chatting?normalizeChatRequest(input):normalizeRequest(input);
         const controller=new AbortController();const onClose=()=>{if(!res.writableEnded)controller.abort();};res.once('close',onClose);
+        const stream=(req.headers.accept||'').split(',').some(type=>type.trim()==='application/x-ndjson')?createEventStream(res,requestId):null;
+        const options={signal:controller.signal,...(stream?{onEvent:stream.emit}:{})};
         try {
+          if(config.provider==='demo')stream?.demo();
           if(chatting){
-            const reply=config.provider==='demo'?demoChatReply(request):await generator.chat(request,{signal:controller.signal});
-            if(!res.destroyed)json(res,200,{...reply,requestId});
+            const reply=config.provider==='demo'?demoChatReply(request):await generator.chat(request,options);
+            if(!res.destroyed){if(stream)stream.result({...reply,requestId});else json(res,200,{...reply,requestId});}
             return;
           }
           let artifact;
           if(config.provider==='demo')artifact={...draftArtifact(request.kind,request.customer,request.vehicles,request.prompt,request.knowledge,{preferredVehicleId:request.preferredVehicleId,campaign:request.campaign,workspaceName:request.workspaceName,workflow:request.workflow,businessContext:request.businessContext,cohort:request.cohort,needsPoster:request.needsPoster}),engine:'demo',model:'本地场景模板'};
-          else artifact=await generator.generate(request,{signal:controller.signal});
-          if(!res.destroyed)json(res,200,{artifact,requestId});
-        }finally{res.off('close',onClose);}
+          else artifact=await generator.generate(request,options);
+          if(!res.destroyed){if(stream)stream.result({artifact,requestId});else json(res,200,{artifact,requestId});}
+        }catch(error){
+          if(!stream)throw error;
+          stream.error(error);
+        }finally{stream?.close();res.off('close',onClose);}
         return;
       }
       if(url.pathname.startsWith('/api/'))throw new AppError('NOT_FOUND','接口不存在或请求方法不正确。',404);

@@ -60,7 +60,7 @@ test('用户只要活动文字时，不强制输出海报或校验海报文案',
 });
 test('SDK 对话带连续历史并使用独立问答协议，复用并发与清理',async()=>{
   let cfg,prompt,done=0;
-  const generator=new CopilotGenerator({clientFactory:async()=>({start:async()=>{},stop:async()=>{},createSession:async c=>{cfg=c;return {sendAndWait:async p=>{prompt=p.prompt;return {data:{content:JSON.stringify({mode:'reply',reply:'是的，我们继续讨论充电。',artifactRequest:null})}};},destroy:async()=>{done++;}};}})});
+  const generator=new CopilotGenerator({clientFactory:async()=>({start:async()=>{},stop:async()=>{},createSession:async c=>{cfg=c;return {sendAndWait:async p=>{prompt=p.prompt;return {data:{content:JSON.stringify({mode:'reply',reply:'是的，我们继续讨论充电。',artifactRequest:null})}};},disconnect:async()=>{done++;}};}})});
   const r=await generator.chat(normalizeChatRequest({message:'继续说',history:[{role:'user',content:'讨论公寓充电'}]}));
   assert.equal(r.mode,'reply');assert.match(prompt,/公寓充电/);assert.match(cfg.systemMessage.content,/Do not force every message/);assert.deepEqual(cfg.availableTools,[]);assert.equal(done,1);assert.equal(generator.active,0);await generator.stop();
 });
