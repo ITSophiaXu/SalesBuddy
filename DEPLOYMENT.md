@@ -17,7 +17,7 @@ bash deploy/prepare.sh http://127.0.0.1:4173
 docker compose --env-file .deploy.env build
 ```
 
-若 4173 已被占用，可改用其他仅绑定 loopback 的端口，例如 `bash deploy/prepare.sh http://127.0.0.1:4174`。脚本会同步设置 `PUBLIC_ORIGIN` 与 `MOTIVE_HOST_PORT`。
+若 4173 已被占用，可改用其他仅绑定 loopback 的端口，例如 `bash deploy/prepare.sh http://127.0.0.1:4174`。脚本会同步设置 `PUBLIC_ORIGIN` 与 `MOTIVE_HOST_PORT`，并为仅通过 SSH 隧道访问的回环来源设置 `MOTIVE_AUTH_MODE=none`，打开页面即可直接进入。无密码模式不能用于公网来源。
 
 脚本从 npm 查询 SDK/CLI 版本并保存在 `.deploy.env`，构建使用确切版本；默认选择 `gpt-6-astra`，组织管理员必须已在 Copilot 模型策略中启用该模型。可在构建前改为组织已验证的 SDK、CLI 和模型版本。源码适配层依据已知 SDK 接口编写，真实兼容性必须通过下一步检查确认。
 
@@ -51,7 +51,7 @@ curl --fail http://127.0.0.1:4173/healthz
 ssh -N -L 4173:127.0.0.1:4173 <你的SSH主机别名>
 ```
 
-打开 `http://127.0.0.1:4173`，用 VM 上 `.private/workspace-password` 中的密码登录。进入设置检查连接，生成一次跟进与活动包，验证文案、独立海报、修改后重新审核以及 PNG/SVG 下载。
+打开 `http://127.0.0.1:4173`。SSH 隧道部署会直接进入工作区；公网 HTTPS 部署仍使用 VM 上 `.private/workspace-password` 中的密码登录。进入设置检查连接，生成一次跟进与活动包，验证文案、独立海报、修改后重新审核以及 PNG/SVG 下载。
 
 ## 4. HTTPS 域名（可选）
 

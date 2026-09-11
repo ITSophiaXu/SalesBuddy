@@ -13,6 +13,7 @@ services:
       - "127.0.0.1:${MOTIVE_HOST_PORT:-4173}:4173"
     environment:
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set the actual access origin}
+      MOTIVE_AUTH_MODE: ${MOTIVE_AUTH_MODE:-password}
       MOTIVE_PASSWORD_FILE: /run/secrets/workspace_password
       COPILOT_MODEL: ${COPILOT_MODEL:-}
       COPILOT_CLI_PATH: /usr/local/bin/copilot

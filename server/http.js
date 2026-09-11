@@ -14,7 +14,7 @@ const mime = {html:'text/html; charset=utf-8',css:'text/css; charset=utf-8',js:'
 function number(value,fallback,min,max) {const n=value==null||value===''?fallback:Number(value);if(!Number.isInteger(n)||n<min||n>max)throw new Error('Invalid numeric server configuration');return n;}
 export function configFromEnv(env) {
   return {host:env.HOST||'127.0.0.1',port:number(env.PORT,4173,1,65535),production:env.NODE_ENV==='production',
-    provider:env.AI_PROVIDER||'copilot',password:env.MOTIVE_PASSWORD||'',publicOrigin:env.PUBLIC_ORIGIN?.replace(/\/$/,'')||'',
+    provider:env.AI_PROVIDER||'copilot',authMode:env.MOTIVE_AUTH_MODE||'password',password:env.MOTIVE_PASSWORD||'',publicOrigin:env.PUBLIC_ORIGIN?.replace(/\/$/,'')||'',
     timeoutMs:number(env.COPILOT_TIMEOUT_MS,120000,1000,300000),maxConcurrent:number(env.MOTIVE_MAX_CONCURRENT,2,1,8)};
 }
 function json(res,status,body) {res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(body));}
@@ -23,12 +23,15 @@ async function body(req,max=400000) {let length=0;const chunks=[];for await(cons
 
 export function createApplication({config,generator}) {
   if(!['copilot','demo'].includes(config.provider))throw new Error('AI_PROVIDER must be copilot or demo');
+  if(!['password','none'].includes(config.authMode))throw new Error('MOTIVE_AUTH_MODE must be password or none');
   const external=!['127.0.0.1','::1','localhost'].includes(config.host);
-  if((config.production||external)&&config.password.length<16)throw new Error('A workspace password of at least 16 characters is required');
+  if(config.authMode==='password'&&(config.production||external)&&config.password.length<16)throw new Error('A workspace password of at least 16 characters is required');
   if(config.production&&!config.publicOrigin)throw new Error('PUBLIC_ORIGIN is required in production');
   let origin;
   if(config.publicOrigin){origin=new URL(config.publicOrigin);if(origin.pathname!=='/'||origin.username||origin.password||origin.search||origin.hash||!['http:','https:'].includes(origin.protocol))throw new Error('PUBLIC_ORIGIN must be an HTTP(S) origin');if(origin.protocol!=='https:'&&!['127.0.0.1','localhost','[::1]'].includes(origin.hostname))throw new Error('A public origin must use HTTPS');}
-  const auth=createAuth({password:config.password,secure:origin?.protocol==='https:'});
+  const loopbackOrigin=origin&&['127.0.0.1','localhost','[::1]'].includes(origin.hostname);
+  if(config.authMode==='none'&&(config.production||external)&&!loopbackOrigin)throw new Error('Passwordless access is only allowed with a loopback PUBLIC_ORIGIN');
+  const auth=createAuth({password:config.authMode==='password'?config.password:'',secure:origin?.protocol==='https:'});
   const quotas=new Map();
   function checkOrigin(req) {const expected=config.publicOrigin||`http://${req.headers.host}`;if(req.headers.origin&&req.headers.origin!==expected)throw new AppError('ORIGIN_DENIED','请求来源不匹配。',403);if(req.headers['sec-fetch-site']==='cross-site')throw new AppError('ORIGIN_DENIED','不接受跨站请求。',403);}
   const server=http.createServer(async(req,res)=>{
@@ -41,6 +44,7 @@ export function createApplication({config,generator}) {
       const requestedHost=new URL(`http://${req.headers.host||'localhost'}`).hostname;
       if(origin?requestedHost!==origin.hostname:!['127.0.0.1','localhost','[::1]'].includes(requestedHost))throw new AppError('HOST_DENIED','主机名不匹配。',403);
       if(url.pathname==='/login') {
+        if(!auth.enabled){res.writeHead(303,{'Location':'/','Cache-Control':'no-store'});return res.end();}
         if(req.method==='GET'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});return res.end(loginPage());}
         if(req.method!=='POST')throw new AppError('METHOD_NOT_ALLOWED','不支持的请求方法。',405);
         checkOrigin(req);const fields=new URLSearchParams(await body(req,4096));const result=auth.login(fields.get('password'),req.socket.remoteAddress);

@@ -8,8 +8,10 @@ if [[ -e .deploy.env ]]; then
 fi
 origin="${1:-http://127.0.0.1:4173}"
 host_port=4173
+auth_mode=password
 if [[ "$origin" =~ ^http://127\.0\.0\.1:([0-9]{1,5})$ ]]; then
   host_port="${BASH_REMATCH[1]}"
+  auth_mode=none
   if (( host_port < 1 || host_port > 65535 )); then
     printf 'Use a loopback port between 1 and 65535.\n' >&2
     exit 1
@@ -46,6 +48,7 @@ COPILOT_MODEL=gpt-6-astra
 PUBLIC_ORIGIN=$origin
 MOTIVE_DOMAIN=$domain
 MOTIVE_HOST_PORT=$host_port
+MOTIVE_AUTH_MODE=$auth_mode
 EOF
 printf 'Prepared deployment configuration and private login file. No services were started.\n'
 printf 'Next: docker compose --env-file .deploy.env build\n'

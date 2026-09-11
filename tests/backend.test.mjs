@@ -67,6 +67,17 @@ test('登录使用 HttpOnly 会话，支持过期、退出和失败次数限制'
 test('生产环境拒绝无密码、公网明文和未配置来源',()=>{
   assert.throws(()=>createApplication({config:{...configFromEnv({}),production:true},generator:{}}),/password/);
   assert.throws(()=>createApplication({config:{...configFromEnv({}),password:'long-password-value',publicOrigin:'http://public.example.com'},generator:{}}),/HTTPS/);
+  assert.throws(()=>createApplication({config:{...configFromEnv({}),production:true,authMode:'none',publicOrigin:'https://public.example.com'},generator:{}}),/loopback/);
+});
+test('SSH 隧道回环来源可显式关闭工作区登录',async t=>{
+  const generator={status:async()=>({provider:'copilot',ready:true,model:'test-model'})};
+  const server=createApplication({config:{...configFromEnv({}),production:true,host:'0.0.0.0',authMode:'none',publicOrigin:'http://127.0.0.1:4173'},generator});
+  server.listen(0,'127.0.0.1');await once(server,'listening');
+  t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
+  const base=`http://127.0.0.1:${server.address().port}`,headers={Host:'127.0.0.1:4173'};
+  assert.equal((await fetch(base+'/',{headers})).status,200);
+  const status=await fetch(base+'/api/status',{headers});assert.equal(status.status,200);assert.equal((await status.json()).authentication,false);
+  const login=await fetch(base+'/login',{headers,redirect:'manual'});assert.equal(login.status,303);assert.equal(login.headers.get('location'),'/');
 });
 test('真实 HTTP 路由验证登录、来源、请求校验、交付物与静态文件隔离',async t=>{
   let calls=0;const generator={status:async()=>({provider:'copilot',ready:true,model:'test-model'}),generate:async request=>{calls++;return parseArtifact(JSON.stringify(output()),request,'test-model');}};
