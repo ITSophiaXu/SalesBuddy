@@ -1,0 +1,35 @@
+name: motive
+services:
+  app:
+    image: motive:${MOTIVE_RELEASE:-local}
+    build:
+      context: .
+      args:
+        COPILOT_SDK_VERSION: ${COPILOT_SDK_VERSION:?Run deploy/prepare.sh first}
+        COPILOT_CLI_VERSION: ${COPILOT_CLI_VERSION:?Run deploy/prepare.sh first}
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4173:4173"
+    environment:
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set the actual access origin}
+      MOTIVE_PASSWORD_FILE: /run/secrets/workspace_password
+      COPILOT_MODEL: ${COPILOT_MODEL:-}
+      COPILOT_CLI_PATH: /usr/local/bin/copilot
+      COPILOT_TIMEOUT_MS: 120000
+      MOTIVE_MAX_CONCURRENT: 2
+    secrets:
+      - workspace_password
+    volumes:
+      - copilot_home:/home/node/.copilot
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 20s
+secrets:
+  workspace_password:
+    file: ./.private/workspace-password
+volumes:
+  copilot_home:
