@@ -8,7 +8,7 @@ import {draftArtifact} from '../domain.js';
 const root = new URL('../',import.meta.url);
 const files = new Map([
   ['/','index.html'],['/index.html','index.html'],['/styles.css','styles.css'],['/app.js','app.js'],
-  ['/domain.js','domain.js'],['/data.js','data.js'],['/ai-client.js','ai-client.js'],['/poster.js','poster.js'],['/assets/favicon.svg','assets/favicon.svg']
+  ['/domain.js','domain.js'],['/data.js','data.js'],['/ai-client.js','ai-client.js'],['/poster.js','poster.js'],['/cowork.js','cowork.js'],['/cowork-ui.js','cowork-ui.js'],['/cowork.css','cowork.css'],['/assets/favicon.svg','assets/favicon.svg']
 ]);
 const mime = {html:'text/html; charset=utf-8',css:'text/css; charset=utf-8',js:'text/javascript; charset=utf-8',svg:'image/svg+xml'};
 function number(value,fallback,min,max) {const n=value==null||value===''?fallback:Number(value);if(!Number.isInteger(n)||n<min||n>max)throw new Error('Invalid numeric server configuration');return n;}
@@ -37,7 +37,7 @@ export function createApplication({config,generator}) {
     res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     try {
       const url=new URL(req.url,'http://localhost');
-      if(url.pathname==='/healthz'&&req.method==='GET')return json(res,200,{ok:true,service:'motive',version:'1.1.0'});
+      if(url.pathname==='/healthz'&&req.method==='GET')return json(res,200,{ok:true,service:'motive',version:'1.2.0'});
       const requestedHost=new URL(`http://${req.headers.host||'localhost'}`).hostname;
       if(origin?requestedHost!==origin.hostname:!['127.0.0.1','localhost','[::1]'].includes(requestedHost))throw new AppError('HOST_DENIED','主机名不匹配。',403);
       if(url.pathname==='/login') {
@@ -51,7 +51,7 @@ export function createApplication({config,generator}) {
       if(!publicFile&&!auth.verify(req)) {if(url.pathname.startsWith('/api/'))throw new AppError('LOGIN_REQUIRED','请先登录工作区。',401);res.writeHead(302,{'Location':'/login','Cache-Control':'no-store'});return res.end();}
       if(url.pathname==='/api/status'&&req.method==='GET'){
         const ai=config.provider==='demo'?{provider:'demo',ready:true,code:'DEMO',message:'当前明确使用本地模板演示，未调用大模型。',model:'本地场景模板'}:await generator.status({probe:true});
-        return json(res,200,{...ai,authentication:auth.enabled,storage:'browser',scheduler:'browser',version:'1.1.0'});
+        return json(res,200,{...ai,authentication:auth.enabled,storage:'browser',scheduler:'browser',version:'1.2.0'});
       }
       if(url.pathname==='/api/logout'&&req.method==='POST'){checkOrigin(req);res.setHeader('Set-Cookie',auth.logout(req));return json(res,200,{ok:true});}
       if(url.pathname==='/api/generate'&&req.method==='POST'){
@@ -64,7 +64,7 @@ export function createApplication({config,generator}) {
         const controller=new AbortController();const onClose=()=>{if(!res.writableEnded)controller.abort();};res.once('close',onClose);
         try {
           let artifact;
-          if(config.provider==='demo')artifact={...draftArtifact(request.kind,request.customer,request.vehicles,request.prompt,request.knowledge,{preferredVehicleId:request.preferredVehicleId,campaign:request.campaign,workspaceName:request.workspaceName}),engine:'demo',model:'本地场景模板'};
+          if(config.provider==='demo')artifact={...draftArtifact(request.kind,request.customer,request.vehicles,request.prompt,request.knowledge,{preferredVehicleId:request.preferredVehicleId,campaign:request.campaign,workspaceName:request.workspaceName,workflow:request.workflow,businessContext:request.businessContext,cohort:request.cohort,needsPoster:request.needsPoster}),engine:'demo',model:'本地场景模板'};
           else artifact=await generator.generate(request,{signal:controller.signal});
           if(!res.destroyed)json(res,200,{artifact,requestId});
         }finally{res.off('close',onClose);}

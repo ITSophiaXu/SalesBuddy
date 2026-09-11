@@ -31,13 +31,15 @@ globalThis.setInterval = () => {};
 globalThis.requestAnimationFrame = () => {};
 globalThis.FormData = class { constructor(form) { this.data = form.values; } *[Symbol.iterator]() { yield* Object.entries(this.data); } };
 let failGeneration=false;
+let holdGeneration=null;
 const requests=[];
 globalThis.fetch=async(url,options={})=>{
   if(url==='/api/status')return Response.json({provider:'demo',ready:true,model:'Test fixture',message:'Test fixture'});
   if(url!=='/api/generate')throw new Error('Unexpected request');
   const r=JSON.parse(options.body);requests.push(r);
+  if(holdGeneration)await holdGeneration;
   if(failGeneration)return Response.json({error:{code:'GENERATION_FAILED',message:'测试模型服务不可用'}},{status:502});
-  const artifact=draftArtifact(r.kind,r.customer,r.vehicles,r.prompt,r.knowledge,{preferredVehicleId:r.preferredVehicleId,campaign:r.campaign,workspaceName:r.workspaceName});
+  const artifact=draftArtifact(r.kind,r.customer,r.vehicles,r.prompt,r.knowledge,{preferredVehicleId:r.preferredVehicleId,campaign:r.campaign,workspaceName:r.workspaceName,workflow:r.workflow,businessContext:r.businessContext,needsPoster:r.needsPoster});
   if(r.kind==='campaign')artifact.posterBrief={kicker:'FAMILY DRIVE',headline:'Room for what matters.',subheadline:'Find your next drive.',details:'Appointment details to be confirmed.',cta:'Request a test drive',disclaimer:'Concept. Confirm local details.'};
   return Response.json({artifact:{...artifact,engine:'demo'}});
 };
@@ -49,11 +51,12 @@ const navigate = page => { location.hash = `#${page}`; windowListeners.hashchang
 async function click(act, extra = {}) { const el = { dataset: { act, ...extra } }; await listeners.click({ target: { matches() { return false; }, closest() { return el; } } }); }
 function submit(id, values, dataset={}) { return listeners.submit({ preventDefault() {}, target: { id, values, dataset } }); }
 
-test('新工作区可加载并渲染九个完整功能页面', () => {
+test('新工作区自动整理客户工作，可加载原页面及新的工作与人工待办', () => {
   assert.equal(currentState().customers.length, 8);
   assert.equal(currentState().tasks.length, 3);
-  assert.equal(currentState().artifacts.length, 4);
-  for (const page of ['home','workspace','customers','inventory','campaigns','automations','deliverables','knowledge','settings']) {
+  assert.equal(currentState().works.length, 8);
+  assert.equal(currentState().artifacts.filter(a=>a.kind==='journey').length,8);
+  for (const page of ['home','work','inbox','workspace','customers','inventory','campaigns','automations','deliverables','knowledge','settings']) {
     navigate(page);
     assert.match(main(), /<main class="main">/);
     assert.doesNotMatch(main(), />NaN</);
@@ -174,4 +177,48 @@ test('海报的 AI 优化保留所选语言、尺寸和配色',async()=>{
   const s=currentState(),task=s.tasks[0],created=s.artifacts.find(a=>a.id===task.posterId);
   assert.equal(requests.at(-1).customer.language,'en');assert.match(requests.at(-1).prompt,/A revised headline/);
   assert.equal(created.poster.size,'square');assert.equal(created.poster.theme,'sand');
+});
+
+test('客户工作完整走通：调整时段、审核材料、记录发送与客户同意、登记回执',async()=>{
+  const id='work_c1';await click('cw-open',{id});navigate('work');
+  assert.match(main(),/邀约结果，要有三份依据/);
+  const slot=currentState().visitSlots.find(s=>s.city==='Austin, TX');
+  element('#cw-slot').value=slot.id;await click('cw-slot-save',{id});
+  await click('cw-strategy',{id});
+  let s=currentState(),w=s.works.find(w=>w.id===id),poster=s.artifacts.find(a=>a.id===w.posterId);
+  await click('artifact',{id:poster.id});element('#poster-form').values={...poster.poster};await click('poster-approve');await click('close-modal');
+  await click('cw-activity',{id});assert.ok(currentState().works.find(w=>w.id===id).decisions.activity);
+  await click('cw-outbound',{id});await submit('cw-outbound-form',{confirmed:'on',note:'已实际发送此时段邀请。'},{id});
+  await submit('cw-feedback-form',{type:'reply',message:'我再考虑一下。',outcome:'unsure',slotId:''},{id});
+  await click('cw-reservation',{id});await submit('cw-reservation-form',{confirmed:'on',reference:'UI-R1'},{id});
+  assert.equal(currentState().works.find(w=>w.id===id).reservation,undefined);assert.match(element('#toast-root').innerHTML,/尚未明确接受/);
+  await click('close-modal');await submit('cw-feedback-form',{type:'reply',message:'我确定这个时段到店。',outcome:'accepted',slotId:slot.id},{id});
+  await click('cw-reservation',{id});await submit('cw-reservation-form',{confirmed:'on',reference:'UI-R1'},{id});
+  s=currentState();w=s.works.find(w=>w.id===id);assert.equal(w.reservation.reference,'UI-R1');assert.equal(s.customers.find(c=>c.id==='c1').stage,'已约试驾');assert.match(main(),/已建立|接待/);
+});
+
+test('模型返回较晚时，不让旧客户事实覆盖已经更新的工作包',async()=>{
+  let release;holdGeneration=new Promise(resolve=>{release=resolve;});
+  const running=click('customer-run',{id:'c1',kind:'followup'});
+  await new Promise(resolve=>setImmediate(resolve));
+  const pending=currentState().tasks[0];assert.equal(pending.status,'running');
+  submit('memory-form',{memory:'最新变化：需要另行确认新时间。'},{id:'c1'});
+  release();await running;holdGeneration=null;
+  const done=currentState().tasks.find(t=>t.id===pending.id);assert.equal(done.status,'stale');assert.equal(done.artifactId,undefined);
+});
+
+test('停止运行中的生成，迟到的结果不会被保存为完成',async()=>{
+  let release;holdGeneration=new Promise(resolve=>{release=resolve;});
+  const running=click('customer-run',{id:'c3',kind:'quote'});await new Promise(resolve=>setImmediate(resolve));
+  const pending=currentState().tasks[0];await click('cancel-task',{id:pending.id});
+  release();await running;holdGeneration=null;
+  const done=currentState().tasks.find(t=>t.id===pending.id);assert.equal(done.status,'cancelled');assert.equal(done.artifactId,undefined);
+});
+
+test('从快速咨询入口进入完整交接工作，城市与预算不被补写为猜测',async()=>{
+  await click('cw-quick-lead');assert.match(modal(),/仅凭联系方式/);
+  await submit('cw-lead-form',{name:'',contact:'new-qa@example.com',market:'GB',channel:'Email',need:''});
+  const c=currentState().customers.find(c=>c.email==='new-qa@example.com');assert.equal(c.budgetUnknown,true);assert.equal(c.city,'城市待确认');
+  assert.equal(currentState().visitSlots.some(s=>s.city==='城市待确认'),false);
+  navigate('work');assert.match(main(),/补齐需求/);
 });

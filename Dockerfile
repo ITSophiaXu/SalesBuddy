@@ -10,7 +10,7 @@ RUN test -n "$COPILOT_SDK_VERSION" && test -n "$COPILOT_CLI_VERSION" \
     && npm install --omit=dev --save-exact "@github/copilot-sdk@${COPILOT_SDK_VERSION}" \
     && npm install --global "@github/copilot@${COPILOT_CLI_VERSION}" \
     && npm cache clean --force
-COPY index.html styles.css app.js ai-client.js poster.js domain.js data.js server.js ./
+COPY index.html styles.css cowork.css app.js cowork.js cowork-ui.js ai-client.js poster.js domain.js data.js server.js ./
 COPY assets ./assets
 COPY server ./server
 COPY scripts/check-copilot.mjs ./scripts/check-copilot.mjs
