@@ -7,8 +7,15 @@ if [[ -e .deploy.env ]]; then
   exit 0
 fi
 origin="${1:-http://127.0.0.1:4173}"
-if [[ "$origin" != 'http://127.0.0.1:4173' && ! "$origin" =~ ^https://[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]]; then
-  printf 'Use the loopback origin or an HTTPS DNS hostname without a path.\n' >&2
+host_port=4173
+if [[ "$origin" =~ ^http://127\.0\.0\.1:([0-9]{1,5})$ ]]; then
+  host_port="${BASH_REMATCH[1]}"
+  if (( host_port < 1 || host_port > 65535 )); then
+    printf 'Use a loopback port between 1 and 65535.\n' >&2
+    exit 1
+  fi
+elif [[ ! "$origin" =~ ^https://[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]]; then
+  printf 'Use an HTTP loopback origin or an HTTPS DNS hostname without a path.\n' >&2
   exit 1
 fi
 command -v docker >/dev/null
@@ -35,9 +42,10 @@ cat > .deploy.env <<EOF
 MOTIVE_RELEASE=$(date -u +%Y%m%dT%H%M%SZ)
 COPILOT_SDK_VERSION=$sdk_version
 COPILOT_CLI_VERSION=$cli_version
-COPILOT_MODEL=
+COPILOT_MODEL=gpt-6-astra
 PUBLIC_ORIGIN=$origin
 MOTIVE_DOMAIN=$domain
+MOTIVE_HOST_PORT=$host_port
 EOF
 printf 'Prepared deployment configuration and private login file. No services were started.\n'
 printf 'Next: docker compose --env-file .deploy.env build\n'

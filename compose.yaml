@@ -10,7 +10,7 @@ services:
     init: true
     restart: unless-stopped
     ports:
-      - "127.0.0.1:4173:4173"
+      - "127.0.0.1:${MOTIVE_HOST_PORT:-4173}:4173"
     environment:
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set the actual access origin}
       MOTIVE_PASSWORD_FILE: /run/secrets/workspace_password

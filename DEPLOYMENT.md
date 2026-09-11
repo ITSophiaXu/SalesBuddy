@@ -4,7 +4,7 @@
 
 仓库提供 Azure VM 部署配置。代码测试使用替身 SDK 客户端，**不代表真实模型调用或远程部署已经通过验证**。上线前须在目标环境安装依赖、完成 Copilot 登录，并执行本文中的真实生成检查。服务器地址、私钥和运行凭据应保存在仓库之外，或放入已忽略的本地运行目录。
 
-以下针对已有 Linux VM 与 Docker Compose；Windows VM 需另选运行环境。默认只绑定 VM 本机的 4173，通过 SSH 隧道访问。脚本不修改其他网站、网关、Azure NSG 或防火墙。
+以下针对已有 Linux VM 与 Docker Compose；Windows VM 需另选运行环境。默认只绑定 VM 本机的 4173，通过 SSH 隧道访问；端口被占用时可在准备命令中指定其他 loopback 端口。脚本不修改其他网站、网关、Azure NSG 或防火墙。
 
 ## 1. 发布包与构建
 
@@ -17,7 +17,9 @@ bash deploy/prepare.sh http://127.0.0.1:4173
 docker compose --env-file .deploy.env build
 ```
 
-脚本从 npm 查询 SDK/CLI 版本并保存在 `.deploy.env`，构建使用确切版本；可在构建前改为组织已验证的版本。源码适配层依据已知 SDK 接口编写，真实兼容性必须通过下一步检查确认。
+若 4173 已被占用，可改用其他仅绑定 loopback 的端口，例如 `bash deploy/prepare.sh http://127.0.0.1:4174`。脚本会同步设置 `PUBLIC_ORIGIN` 与 `MOTIVE_HOST_PORT`。
+
+脚本从 npm 查询 SDK/CLI 版本并保存在 `.deploy.env`，构建使用确切版本；默认选择 `gpt-6-astra`，组织管理员必须已在 Copilot 模型策略中启用该模型。可在构建前改为组织已验证的 SDK、CLI 和模型版本。源码适配层依据已知 SDK 接口编写，真实兼容性必须通过下一步检查确认。
 
 脚本生成随机工作区密码，保存在 `.private/workspace-password`，不会输出。目录权限 0700，文件通过 Docker secret 挂载，不写入镜像。已存在的 `.deploy.env` 保持不变。Copilot 身份保存在独立持久卷 `copilot_home`。
 
