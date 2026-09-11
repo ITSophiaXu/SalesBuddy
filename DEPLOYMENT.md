@@ -21,7 +21,7 @@ docker compose --env-file .deploy.env build
 
 脚本从 npm 查询 SDK/CLI 版本并保存在 `.deploy.env`，构建使用确切版本；默认选择 `gpt-6-astra`，组织管理员必须已在 Copilot 模型策略中启用该模型。可在构建前改为组织已验证的 SDK、CLI 和模型版本。源码适配层依据已知 SDK 接口编写，真实兼容性必须通过下一步检查确认。
 
-脚本生成随机工作区密码，保存在 `.private/workspace-password`，不会输出。目录权限 0700，文件通过 Docker secret 挂载，不写入镜像。已存在的 `.deploy.env` 保持不变。Copilot 身份保存在独立持久卷 `copilot_home`。
+脚本生成随机工作区密码，保存在 `.private/workspace-password`，不会输出。目录权限 0700，文件通过 Docker secret 挂载，不写入镜像。已存在的 `.deploy.env` 保持不变。Copilot 身份保存在独立持久卷 `copilot_home`，CLI 解包缓存保存在 `copilot_cache`；应用根文件系统仍保持只读。
 
 ## 2. 登录 Copilot 并验证真实调用
 

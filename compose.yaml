@@ -22,6 +22,7 @@ services:
       - workspace_password
     volumes:
       - copilot_home:/home/node/.copilot
+      - copilot_cache:/home/node/.cache
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=256m
@@ -33,3 +34,4 @@ secrets:
     file: ./.private/workspace-password
 volumes:
   copilot_home:
+  copilot_cache:

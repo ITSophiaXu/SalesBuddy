@@ -14,7 +14,8 @@ COPY index.html styles.css cowork.css app.js cowork.js cowork-ui.js ai-client.js
 COPY assets ./assets
 COPY server ./server
 COPY scripts/check-copilot.mjs ./scripts/check-copilot.mjs
-RUN mkdir -p /home/node/.copilot && chown node:node /home/node/.copilot
+RUN mkdir -p /home/node/.copilot /home/node/.cache \
+    && chown node:node /home/node/.copilot /home/node/.cache
 USER node
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=4173 AI_PROVIDER=copilot
 EXPOSE 4173
