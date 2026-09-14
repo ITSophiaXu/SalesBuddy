@@ -2,16 +2,17 @@ import http from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {randomUUID,createHash} from 'node:crypto';
 import {createAuth} from './auth.js';
-import {AppError,normalizeRequest} from './protocol.js';
+import {AppError,normalizeRequest,draftStoreArtifact} from './protocol.js';
 import {draftArtifact} from '../domain.js';
 import {normalizeChatRequest,demoChatReply} from './chat.js';
 import {createEventStream} from './events.js';
 
 const root = new URL('../',import.meta.url);
+const {version}=JSON.parse(await readFile(new URL('package.json',root),'utf8'));
 const files = new Map([
   ['/markdown.js','markdown.js'],['/execution.js','execution.js'],['/node_modules/marked/lib/marked.esm.js','node_modules/marked/lib/marked.esm.js'],
   ['/','index.html'],['/index.html','index.html'],['/styles.css','styles.css'],['/app.js','app.js'],
-  ['/domain.js','domain.js'],['/data.js','data.js'],['/ai-client.js','ai-client.js'],['/poster.js','poster.js'],['/cowork.js','cowork.js'],['/cowork-ui.js','cowork-ui.js'],['/cowork.css','cowork.css'],['/chat-ui.js','chat-ui.js'],['/chat.css','chat.css'],['/assets/favicon.svg','assets/favicon.svg']
+  ['/domain.js','domain.js'],['/data.js','data.js'],['/ai-client.js','ai-client.js'],['/poster.js','poster.js'],['/cowork.js','cowork.js'],['/cowork-ui.js','cowork-ui.js'],['/cowork.css','cowork.css'],['/chat-ui.js','chat-ui.js'],['/chat.css','chat.css'],['/ux.css','ux.css'],['/workspace-model.js','workspace-model.js'],['/workspace-ui.js','workspace-ui.js'],['/task-flow.js','task-flow.js'],['/task-ui.js','task-ui.js'],['/customer-profile.js','customer-profile.js'],['/profile-ui.js','profile-ui.js'],['/assets/favicon.svg','assets/favicon.svg']
 ]);
 const mime = {html:'text/html; charset=utf-8',css:'text/css; charset=utf-8',js:'text/javascript; charset=utf-8',svg:'image/svg+xml'};
 function number(value,fallback,min,max) {const n=value==null||value===''?fallback:Number(value);if(!Number.isInteger(n)||n<min||n>max)throw new Error('Invalid numeric server configuration');return n;}
@@ -21,20 +22,28 @@ export function configFromEnv(env) {
     timeoutMs:number(env.COPILOT_TIMEOUT_MS,120000,1000,300000),maxConcurrent:number(env.MOTIVE_MAX_CONCURRENT,2,1,8)};
 }
 function json(res,status,body) {res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(body));}
+function acceptsEvents(accept='') {
+  const qualities=new Map(accept.toLowerCase().split(',').map(value=>{
+    const [type,...parameters]=value.trim().split(';'),quality=parameters.find(p=>p.trim().startsWith('q='));
+    const q=quality===undefined?1:Number(quality.trim().slice(2));
+    return [type.trim(),Number.isFinite(q)&&q>=0&&q<=1?q:0];
+  }));
+  const stream=qualities.get('application/x-ndjson')||0;
+  return stream>0&&stream>=(qualities.get('application/json')||0);
+}
 function loginPage(error='') {return `<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>登录 · Motive</title><link rel="icon" href="/assets/favicon.svg"><link rel="stylesheet" href="/styles.css"></head><body><main class="login-layout"><section class="login-card"><img src="/assets/favicon.svg" width="48" height="48" alt="Motive"><p class="eyebrow">AUTOMOTIVE COWORK</p><h1>让下一程，从这里开始。</h1><p class="muted">登录你的汽车营销协作空间。</p><form action="/login" method="post"><label class="field-label" for="password">工作区访问密码</label><input class="field" id="password" type="password" name="password" required autocomplete="current-password" autofocus maxlength="1000">${error?`<p class="login-error">${error}</p>`:''}<button class="btn primary" type="submit">进入工作区 →</button></form><p class="small muted">模型凭据保留在服务器，浏览器不会接收 GitHub 令牌。</p></section></main></body></html>`;}
 async function body(req,max=400000) {let length=0;const chunks=[];for await(const chunk of req){length+=chunk.length;if(length>max){req.resume();throw new AppError('PAYLOAD_TOO_LARGE','请求过大，请减少本次引用的资料。',413);}chunks.push(chunk);}return Buffer.concat(chunks).toString('utf8');}
 
 export function createApplication({config,generator}) {
   if(!['copilot','demo'].includes(config.provider))throw new Error('AI_PROVIDER must be copilot or demo');
-  if(!['password','none'].includes(config.authMode))throw new Error('MOTIVE_AUTH_MODE must be password or none');
+  const authMode=config.authMode??'password';
+  if(!['password','none'].includes(authMode))throw new Error('MOTIVE_AUTH_MODE must be password or none');
   const external=!['127.0.0.1','::1','localhost'].includes(config.host);
-  if(config.authMode==='password'&&(config.production||external)&&config.password.length<16)throw new Error('A workspace password of at least 16 characters is required');
+  if(authMode==='password'&&(config.production||external)&&config.password.length<16)throw new Error('A workspace password of at least 16 characters is required');
   if(config.production&&!config.publicOrigin)throw new Error('PUBLIC_ORIGIN is required in production');
   let origin;
   if(config.publicOrigin){origin=new URL(config.publicOrigin);if(origin.pathname!=='/'||origin.username||origin.password||origin.search||origin.hash||!['http:','https:'].includes(origin.protocol))throw new Error('PUBLIC_ORIGIN must be an HTTP(S) origin');if(origin.protocol!=='https:'&&!['127.0.0.1','localhost','[::1]'].includes(origin.hostname))throw new Error('A public origin must use HTTPS');}
-  const loopbackOrigin=origin&&['127.0.0.1','localhost','[::1]'].includes(origin.hostname);
-  if(config.authMode==='none'&&(config.production||external)&&!loopbackOrigin)throw new Error('Passwordless access is only allowed with a loopback PUBLIC_ORIGIN');
-  const auth=createAuth({password:config.authMode==='password'?config.password:'',secure:origin?.protocol==='https:'});
+  const auth=createAuth({password:authMode==='password'?config.password:'',secure:origin?.protocol==='https:'});
   const quotas=new Map();
   function checkOrigin(req) {const expected=config.publicOrigin||`http://${req.headers.host}`;if(req.headers.origin&&req.headers.origin!==expected)throw new AppError('ORIGIN_DENIED','请求来源不匹配。',403);if(req.headers['sec-fetch-site']==='cross-site')throw new AppError('ORIGIN_DENIED','不接受跨站请求。',403);}
   const server=http.createServer(async(req,res)=>{
@@ -43,7 +52,7 @@ export function createApplication({config,generator}) {
     res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     try {
       const url=new URL(req.url,'http://localhost');
-      if(url.pathname==='/healthz'&&req.method==='GET')return json(res,200,{ok:true,service:'motive',version:'1.3.0'});
+      if(url.pathname==='/healthz'&&req.method==='GET')return json(res,200,{ok:true,service:'motive',version});
       const requestedHost=new URL(`http://${req.headers.host||'localhost'}`).hostname;
       if(origin?requestedHost!==origin.hostname:!['127.0.0.1','localhost','[::1]'].includes(requestedHost))throw new AppError('HOST_DENIED','主机名不匹配。',403);
       if(url.pathname==='/login') {
@@ -58,7 +67,7 @@ export function createApplication({config,generator}) {
       if(!publicFile&&!auth.verify(req)) {if(url.pathname.startsWith('/api/'))throw new AppError('LOGIN_REQUIRED','请先登录工作区。',401);res.writeHead(302,{'Location':'/login','Cache-Control':'no-store'});return res.end();}
       if(url.pathname==='/api/status'&&req.method==='GET'){
         const ai=config.provider==='demo'?{provider:'demo',ready:true,code:'DEMO',message:'当前明确使用本地模板演示，未调用大模型。',model:'本地场景模板'}:await generator.status({probe:true});
-        return json(res,200,{...ai,authentication:auth.enabled,storage:'browser',scheduler:'browser',version:'1.3.0'});
+        return json(res,200,{...ai,authentication:auth.enabled,storage:'browser',scheduler:'browser',version});
       }
       if(url.pathname==='/api/logout'&&req.method==='POST'){checkOrigin(req);res.setHeader('Set-Cookie',auth.logout(req));return json(res,200,{ok:true});}
       if(['/api/generate','/api/chat'].includes(url.pathname)&&req.method==='POST'){
@@ -70,7 +79,7 @@ export function createApplication({config,generator}) {
         const chatting=url.pathname==='/api/chat';
         const request=chatting?normalizeChatRequest(input):normalizeRequest(input);
         const controller=new AbortController();const onClose=()=>{if(!res.writableEnded)controller.abort();};res.once('close',onClose);
-        const stream=(req.headers.accept||'').split(',').some(type=>type.trim()==='application/x-ndjson')?createEventStream(res,requestId):null;
+        const stream=acceptsEvents(req.headers.accept)?createEventStream(res,requestId):null;
         const options={signal:controller.signal,...(stream?{onEvent:stream.emit}:{})};
         try {
           if(config.provider==='demo')stream?.demo();
@@ -80,7 +89,7 @@ export function createApplication({config,generator}) {
             return;
           }
           let artifact;
-          if(config.provider==='demo')artifact={...draftArtifact(request.kind,request.customer,request.vehicles,request.prompt,request.knowledge,{preferredVehicleId:request.preferredVehicleId,campaign:request.campaign,workspaceName:request.workspaceName,workflow:request.workflow,businessContext:request.businessContext,cohort:request.cohort,needsPoster:request.needsPoster}),engine:'demo',model:'本地场景模板'};
+          if(config.provider==='demo')artifact={...(request.scope==='store'?draftStoreArtifact(request):draftArtifact(request.kind,request.customer,request.vehicles,request.prompt,request.knowledge,{preferredVehicleId:request.preferredVehicleId,campaign:request.campaign,workspaceName:request.workspaceName,workflow:request.workflow,businessContext:request.businessContext,cohort:request.cohort,needsPoster:request.needsPoster})),engine:'demo',model:'本地场景模板'};
           else artifact=await generator.generate(request,options);
           if(!res.destroyed){if(stream)stream.result({artifact,requestId});else json(res,200,{artifact,requestId});}
         }catch(error){

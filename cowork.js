@@ -31,11 +31,14 @@ const isOwner = c => ['已成交','售后维护'].includes(c.stage);
 export function classifyCustomer(c) {
   if(c.serviceIssue?.status==='open')return 'complaint';
   if(isOwner(c))return 'service';
-  const value=[c.need,c.concern].join(' ');
-  if(/企业|车队|fleet|corporate/i.test(value))return 'fleet';
-  if(/充电|charging/i.test(value))return 'charging';
-  if(/置换|评估|trade.?in/i.test(value))return 'tradein';
-  if(/孩子|儿童|家庭|后排|family|child/i.test(value))return 'family';
+  // Current structured needs take priority over historical notes about alternatives.
+  const values=[[c.need,c.concern,c.tradeIn].join(' '),(c.memories||[]).filter(m=>!m.superseded&&m.type!=='inference'&&['need','concern','tradeIn'].includes(m.field)).map(m=>m.text).join(' ')];
+  for(const value of values){
+    if(/企业|车队|fleet|corporate/i.test(value))return 'fleet';
+    if(/充电|charging/i.test(value))return 'charging';
+    if(/置换|评估|trade.?in/i.test(value))return 'tradein';
+    if(/孩子|儿童|家庭|后排|family|child/i.test(value))return 'family';
+  }
   return 'qualify';
 }
 export function workPlan(c) {
@@ -138,12 +141,16 @@ export function prepareWork(state,w,reason,now=new Date()) {
 }
 
 export function isArtifactCurrent(state,a){return !!a&&!a.staleReason&&(!a.customerRevision||getCustomer(state,a.customerId)?.contextVersion===a.customerRevision)&&(!a.cohort||a.cohort.every(c=>getCustomer(state,c.id)?.contextVersion===c.revision));}
-export function invalidateCustomer(state,customerId,reason,now=new Date()) {
+export function invalidateCustomerMaterials(state,customerId,reason) {
   const c=getCustomer(state,customerId);c.contextVersion=(c.contextVersion||1)+1;
   for(const a of state.artifacts.filter(a=>(a.customerId===customerId||a.cohort?.some(x=>x.id===customerId))&&!a.staleReason)){
     a.staleReason=reason;delete a.approvedAt;if(a.status!=='contacted')a.status='stale';
   }
   for(const t of state.tasks.filter(t=>(t.customerId===customerId||t.cohort?.some(x=>x.id===customerId))&&!['failed','cancelled','stale'].includes(t.status))){t.staleReason=reason;if(t.status!=='contacted')t.status='stale';}
+}
+export function invalidateCustomer(state,customerId,reason,now=new Date()) {
+  invalidateCustomerMaterials(state,customerId,reason);
+  const c=getCustomer(state,customerId);
   const w=state.works.find(w=>w.customerId===customerId);
   if(w){
     w.revision=c.contextVersion;w.decisions={};w.status='active';w.aiTaskId=null;w.outbound=null;

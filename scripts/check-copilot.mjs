@@ -1,14 +1,24 @@
+import {mkdir,writeFile} from 'node:fs/promises';
+import {resolve,dirname} from 'node:path';
+import {tmpdir} from 'node:os';
 import {CopilotGenerator} from '../server/copilot.js';
-import {normalizeRequest} from '../server/protocol.js';
-import {seedState} from '../data.js';
-const generator=new CopilotGenerator({model:process.env.COPILOT_MODEL||'',cliPath:process.env.COPILOT_CLI_PATH||'',githubToken:process.env.COPILOT_GITHUB_TOKEN||process.env.GH_TOKEN||''});
+import {loadEnvironment,copilotOptions,projectRoot} from '../server/environment.js';
+import {runLiveCheck} from '../server/live-check.js';
+
+const live=process.argv.includes('--live')||process.argv.includes('--generate');
+let generator;
+let report={ok:false,provider:'copilot',liveRequested:live,checkedAt:new Date().toISOString(),checks:[]};
 try {
-  const status=await generator.status({probe:true});
-  process.stdout.write(JSON.stringify(status,null,2)+'\n');
-  if(!status.ready)process.exitCode=1;
-  else if(process.argv.includes('--generate')){
-    const sample=seedState();const request=normalizeRequest({kind:'followup',prompt:'准备两句话的英文跟进消息与中文审核要点。只使用虚构示例资料。',customer:sample.customers[0],vehicles:sample.vehicles,knowledge:sample.knowledge,workspaceName:'Atlas Motors'});
-    const artifact=await generator.generate(request);
-    process.stdout.write(JSON.stringify({ok:true,engine:artifact.engine,model:artifact.model,title:artifact.title,sections:artifact.sections.length},null,2)+'\n');
-  }
-} catch(error){process.stderr.write(`${error.code||'CHECK_FAILED'}: ${error.message}\n`);process.exitCode=1;}finally{await generator.stop();}
+  await loadEnvironment();generator=new CopilotGenerator(await copilotOptions());
+  const status=await generator.status({probe:true});report.connection=status;
+  if(!status.ready){report.code=status.code;report.message=status.message;process.exitCode=1;}
+  else if(live){report=await runLiveCheck(generator);if(!report.ok)process.exitCode=1;}
+  else{report.ok=true;report.message='身份检查通过；请运行 npm run verify:copilot 验证真实对话和成果生成。';}
+}catch(error){report.code=error.code||'CHECK_FAILED';report.message='连接检查未完成，请检查配置和运行环境。';process.exitCode=1;}
+finally{
+  if(generator)await generator.stop().catch(()=>{});
+  const reportPath=process.env.MOTIVE_CHECK_REPORT||(process.env.NODE_ENV==='production'?resolve(tmpdir(),'motive-copilot-check.json'):resolve(projectRoot,'runtime','copilot-check.json'));
+  try{await mkdir(dirname(reportPath),{recursive:true});await writeFile(reportPath,JSON.stringify(report,null,2)+'\n');}
+  catch{process.stderr.write('检查报告未能写入文件；完整结果见下方输出。\n');}
+  process.stdout.write(JSON.stringify(report,null,2)+'\n');
+}

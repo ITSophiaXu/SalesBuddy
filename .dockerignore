@@ -24,3 +24,11 @@
 !scripts/
 scripts/*
 !scripts/check-copilot.mjs
+
+!ux.css
+!workspace-model.js
+!workspace-ui.js
+!task-flow.js
+!task-ui.js
+!customer-profile.js
+!profile-ui.js

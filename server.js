@@ -1,11 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import { createApplication, configFromEnv } from './server/http.js';
 import { CopilotGenerator } from './server/copilot.js';
+import {loadEnvironment,copilotOptions} from './server/environment.js';
 
+await loadEnvironment();
 const config = configFromEnv(process.env);
-if (config.authMode==='password'&&process.env.MOTIVE_PASSWORD_FILE) config.password = (await readFile(process.env.MOTIVE_PASSWORD_FILE,'utf8')).trim();
-const generator = new CopilotGenerator({ model:process.env.COPILOT_MODEL || '',cliPath:process.env.COPILOT_CLI_PATH || '',
-  githubToken:process.env.COPILOT_GITHUB_TOKEN || process.env.GH_TOKEN || '',timeoutMs:config.timeoutMs,maxConcurrent:config.maxConcurrent });
+if (process.env.MOTIVE_PASSWORD_FILE) config.password = (await readFile(process.env.MOTIVE_PASSWORD_FILE,'utf8')).trim();
+const generator = new CopilotGenerator({...await copilotOptions(),timeoutMs:config.timeoutMs,maxConcurrent:config.maxConcurrent});
 const server = createApplication({config,generator});
 server.listen(config.port,config.host,()=>process.stdout.write(`Motive listening on ${config.host}:${config.port}; provider=${config.provider}\n`));
 server.on('error',error=>{process.stderr.write(`Motive failed to start (${error.code || 'SERVER_ERROR'}).\n`);process.exitCode=1;});

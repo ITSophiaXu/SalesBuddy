@@ -7,26 +7,17 @@ if [[ -e .deploy.env ]]; then
   exit 0
 fi
 origin="${1:-http://127.0.0.1:4173}"
-host_port=4173
-auth_mode=password
-if [[ "$origin" =~ ^http://127\.0\.0\.1:([0-9]{1,5})$ ]]; then
-  host_port="${BASH_REMATCH[1]}"
-  auth_mode=none
-  if (( host_port < 1 || host_port > 65535 )); then
-    printf 'Use a loopback port between 1 and 65535.\n' >&2
-    exit 1
-  fi
-elif [[ ! "$origin" =~ ^https://[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]]; then
-  printf 'Use an HTTP loopback origin or an HTTPS DNS hostname without a path.\n' >&2
+if [[ "$origin" != 'http://127.0.0.1:4173' && ! "$origin" =~ ^https://[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]]; then
+  printf 'Use the loopback origin or an HTTPS DNS hostname without a path.\n' >&2
   exit 1
 fi
 command -v docker >/dev/null
 command -v openssl >/dev/null
 docker compose version >/dev/null
 docker info >/dev/null
-# Resolve registry versions before creating any configuration. Network failures stop here.
-sdk_version="$(docker run --rm node:22-bookworm-slim npm view @github/copilot-sdk version --loglevel=error)"
-cli_version="$(docker run --rm node:22-bookworm-slim npm view @github/copilot version --loglevel=error)"
+# Use the same pinned versions as package-lock.json, never a moving latest release.
+versions="$(docker run --rm -v "$PWD/package.json:/manifest.json:ro" node:22-bookworm-slim node -e 'const d=require("/manifest.json").dependencies;console.log(d["@github/copilot-sdk"],d["@github/copilot"])')"
+read -r sdk_version cli_version <<< "$versions"
 for version in "$sdk_version" "$cli_version"; do
   [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]] || { printf 'Registry returned an invalid version.\n' >&2; exit 1; }
 done
@@ -44,11 +35,11 @@ cat > .deploy.env <<EOF
 MOTIVE_RELEASE=$(date -u +%Y%m%dT%H%M%SZ)
 COPILOT_SDK_VERSION=$sdk_version
 COPILOT_CLI_VERSION=$cli_version
-COPILOT_MODEL=gpt-6-astra
+COPILOT_MODEL=
 PUBLIC_ORIGIN=$origin
+MOTIVE_AUTH_MODE=password
+MOTIVE_HOST_PORT=4173
 MOTIVE_DOMAIN=$domain
-MOTIVE_HOST_PORT=$host_port
-MOTIVE_AUTH_MODE=$auth_mode
 EOF
 printf 'Prepared deployment configuration and private login file. No services were started.\n'
 printf 'Next: docker compose --env-file .deploy.env build\n'

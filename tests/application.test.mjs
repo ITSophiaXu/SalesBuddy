@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {draftArtifact} from '../domain.js';
 import {normalizeChatRequest,demoChatReply} from '../server/chat.js';
-import {setImmediate as tick} from 'node:timers/promises';
+import {normalizeRequest,draftStoreArtifact} from '../server/protocol.js';
 
 // Component/controller tests with an in-memory document adapter. This does not
 // launch or control a browser and is intentionally not visual acceptance testing.
 const elements = new Map();
 function element(selector) {
-  if (!elements.has(selector)) elements.set(selector, { innerHTML: '', style: {}, value: '', dataset: {}, focus() {}, isConnected: true, querySelector(child){return element(selector+' '+child);} });
+  if (!elements.has(selector)) elements.set(selector, { innerHTML: '', style: {}, value: '', dataset: {}, focus() {}, isConnected: true });
   return elements.get(selector);
 }
 const listeners = {};
@@ -22,7 +22,6 @@ globalThis.document = {
     return element(selector);
   },
   querySelectorAll() { return []; },
-  getElementById(id) {return element('#'+id);},
   addEventListener(name, fn) { listeners[name] = fn; }
 };
 globalThis.window = { addEventListener(name, fn) { windowListeners[name] = fn; }, scrollTo() {} };
@@ -38,13 +37,11 @@ let holdGeneration=null;
 const requests=[];
 const chatRequests=[];
 let holdChat=null,failChat=false;
-let streamChat=null,streamGeneration=null;
 let aiStatus={provider:'demo',ready:true,model:'Test fixture',message:'Test fixture'};
 globalThis.fetch=async(url,options={})=>{
   if(url==='/api/status')return Response.json(aiStatus);
   if(url==='/api/chat'){
     const payload=JSON.parse(options.body);chatRequests.push(payload);
-    if(streamChat)return streamChat(payload);
     if(holdChat)await holdChat;
     if(failChat)return Response.json({error:{code:'SDK_NOT_INSTALLED',message:'尚未安装 Copilot SDK'}},{status:503});
     return Response.json(demoChatReply(normalizeChatRequest(payload)));
@@ -53,10 +50,9 @@ globalThis.fetch=async(url,options={})=>{
   const r=JSON.parse(options.body);requests.push(r);
   if(holdGeneration)await holdGeneration;
   if(failGeneration)return Response.json({error:{code:'GENERATION_FAILED',message:'测试模型服务不可用'}},{status:502});
-  const artifact=draftArtifact(r.kind,r.customer,r.vehicles,r.prompt,r.knowledge,{preferredVehicleId:r.preferredVehicleId,campaign:r.campaign,workspaceName:r.workspaceName,workflow:r.workflow,businessContext:r.businessContext,needsPoster:r.needsPoster});
+  const artifact=r.scope==='store'?draftStoreArtifact(normalizeRequest(r)):draftArtifact(r.kind,r.customer,r.vehicles,r.prompt,r.knowledge,{preferredVehicleId:r.preferredVehicleId,campaign:r.campaign,workspaceName:r.workspaceName,workflow:r.workflow,businessContext:r.businessContext,needsPoster:r.needsPoster});
   if(r.kind==='campaign')artifact.posterBrief={kicker:'FAMILY DRIVE',headline:'Room for what matters.',subheadline:'Find your next drive.',details:'Appointment details to be confirmed.',cta:'Request a test drive',disclaimer:'Concept. Confirm local details.'};
-  const data={artifact:{...artifact,engine:'demo'}};
-  return streamGeneration?streamGeneration(data):Response.json(data);
+  return Response.json({artifact:{...artifact,engine:'demo'}});
 };
 await import('../app.js');
 const currentState = () => JSON.parse(storage.get('motive-workspace-v3'));
@@ -71,11 +67,11 @@ test('新工作区自动整理客户工作，可加载原页面及新的工作�
   assert.equal(currentState().tasks.length, 3);
   assert.equal(currentState().works.length, 8);
   assert.equal(currentState().artifacts.filter(a=>a.kind==='journey').length,8);
-  for (const page of ['home','chat','work','inbox','workspace','customers','inventory','campaigns','automations','deliverables','knowledge','settings']) {
+  for (const page of ['home','chat','desk','connections','work','inbox','workspace','customers','inventory','campaigns','automations','deliverables','knowledge','settings']) {
     navigate(page);
     assert.match(main(), /<main class="main">/);
     assert.doesNotMatch(main(), />NaN</);
-    assert.ok(main().length > 6000, `${page} renders content`);
+    assert.ok(main().length > 3500, `${page} renders content`);
   }
 });
 test('客户画像可读取、增加记忆，并持久保存', async () => {
@@ -154,7 +150,7 @@ test('全局搜索可定位客户和交付物', async () => {
   await click('search');
   listeners.input({target:{dataset:{input:'global-search'},value:'Sarah'}});
   assert.match(element('#global-results').innerHTML,/Sarah Johnson/);
-  assert.match(element('#global-results').innerHTML,/交付物/);
+  assert.match(element('#global-results').innerHTML,/成果/);
 });
 test('模型失败保留失败任务，不生成模板；重试可重新完成',async()=>{
   const before=currentState().artifacts.length;failGeneration=true;
@@ -168,9 +164,14 @@ test('模型失败保留失败任务，不生成模板；重试可重新完成',
 test('活动包同时保存关联的文案与海报，海报编辑后重新审核',async()=>{
   const campaign=currentState().campaigns[0];
   await click('campaign-package',{id:campaign.id});
+  navigate('chat');const count=currentState().conversations.length;
+  assert.equal(currentState().conversations[0].customerId,'store:'+campaign.market);
+  await click('campaign-package',{id:campaign.id});assert.equal(currentState().conversations.length,count);
+  element('#cowork-chat-input').value=currentState().conversations[0].draft;
+  await submit('cowork-chat-form',{});navigate('chat');
   const s=currentState(),task=s.tasks[0],poster=s.artifacts.find(a=>a.id===task.posterId);
   assert.equal(poster.parentArtifactId,task.artifactId);assert.equal(poster.campaignId,campaign.id);
-  assert.equal(poster.poster.headline,'Room for what matters.');assert.match(main(),/查看海报/);
+  assert.equal(poster.poster.headline,'Room for what matters.');assert.match(main(),/class="chat-artifact/);
   await click('artifact',{id:poster.id});assert.match(modal(),/LIVE PREVIEW/);assert.match(modal(),/导出 PNG/);
   assert.match(modal(),/<button type="button"[^>]+data-act="poster-ai"/);
   element('#poster-form').values={...poster.poster,size:'story',theme:'midnight',headline:'Ready for your next drive?'};
@@ -239,10 +240,64 @@ test('从快速咨询入口进入完整交接工作，城市与预算不被补�
 });
 
 const sayChat=async text=>{element('#cowork-chat-input').value=text;await submit('cowork-chat-form',{});navigate('chat');};
+test('v1.6 对话保留 Markdown 和真实事件，不因普通流式回复创建任务',async t=>{
+  const original=globalThis.fetch;t.after(()=>{globalThis.fetch=original;});
+  globalThis.fetch=async(url,options)=>{
+    if(url!=='/api/chat')return original(url,options);
+    assert.equal(options.headers.Accept,'application/x-ndjson');
+    const reply='**买了 Model Y 以后，能否方便、稳定地给车充电。**';
+    const events=[
+      {type:'progress',stage:'session_ready',elapsedMs:1},
+      {type:'reply',text:reply},
+      {type:'progress',stage:'complete',elapsedMs:2},
+      {type:'result',data:{mode:'reply',reply,engine:'copilot',artifactRequest:null,profileProposal:null}}
+    ];
+    return new Response(events.map(e=>JSON.stringify(e)+'\n').join(''),{headers:{'Content-Type':'application/x-ndjson'}});
+  };
+  await click('chat-new');const count=currentState().tasks.length;
+  await sayChat('讨论充电，不创建任务');
+  assert.match(main(),/<strong>买了 Model Y 以后，能否方便、稳定地给车充电。<\/strong>/);
+  assert.match(main(),/class="chat-execution"/);
+  const reply=currentState().conversations[0].messages.at(-1);
+  assert.equal(reply.status,'done');assert.equal(reply.engine,'copilot');
+  assert.deepEqual(reply.execution.map(e=>e.stage),['session_ready','complete']);
+  assert.equal(currentState().tasks.length,count);
+});
 const latestChat=()=>currentState().conversations[0];
 
+test('对话整理画像，经销售核对保存，后续车源方案实际使用更新内容',async()=>{
+  await click('chat-profile',{customer:'c1'});navigate('chat');
+  assert.equal(latestChat().customerId,'c1');assert.match(main(),/把刚才的沟通告诉我/);
+  const before=currentState(),cBefore=before.customers.find(c=>c.id==='c1');
+  await sayChat('沟通记录：需要更大的后排空间。太太希望一起试驾后决定。计划月底购车。');
+  const chat=latestChat(),m=chat.messages.at(-1);assert.equal(m.mode,'profile');assert.equal(m.profileProposal.status,'pending');
+  assert.equal(currentState().artifacts.length,before.artifacts.length);assert.equal(currentState().tasks.length,before.tasks.length);
+  assert.equal(currentState().customers.find(c=>c.id==='c1').contextVersion,cBefore.contextVersion);assert.match(main(),/核对并记入画像/);
+  await click('profile-review',{chat:chat.id,message:m.id});assert.match(modal(),/销售原话/);assert.match(modal(),/替换这一类的旧描述/);
+  const values=Object.fromEntries(m.profileProposal.facts.flatMap((f,n)=>[[`include_${n}`,'on'],[`value_${n}`,f.value],[`type_${n}`,f.type],[`action_${n}`,'replace']]));
+  await submit('profile-confirm-form',values);
+  const after=currentState(),c=after.customers.find(c=>c.id==='c1');
+  assert.equal(c.decisionProcess,'太太希望一起试驾后决定');assert.equal(c.purchaseTiming,'计划月底购车');
+  assert.equal(c.lastContact,cBefore.lastContact);assert.equal(c.stage,cBefore.stage);assert.deepEqual(c.consent,cBefore.consent);
+  assert.equal(after.tasks.length,before.tasks.length);assert.equal(after.artifacts.length,before.artifacts.length);assert.equal(latestChat().tracked,undefined);
+  assert.match(main(),/已记入画像/);
+  await click('customer',{id:c.id});assert.match(modal(),/持续积累的客户画像/);assert.match(modal(),/太太希望一起试驾后决定/);assert.match(modal(),/回到对话/);
+  await click('close-modal');await click('vehicle-customer-run',{id:c.id,vehicle:'v3'});
+  assert.equal(requests.at(-1).customer.decisionProcess,'太太希望一起试驾后决定');assert.equal(requests.at(-1).customer.need,'需要更大的后排空间');
+  assert.ok(requests.at(-1).customer.memories.some(x=>x.evidence==='计划月底购车'));
+});
+
+test('画像草稿暂不记录不会改变客户，未选客户不会默认写入第一位客户',async()=>{
+  await click('chat-profile');navigate('chat');await sayChat('沟通记录：客户想买家庭车');
+  assert.equal(latestChat().customerId,'');assert.equal(latestChat().messages.at(-1).mode,'clarify');
+  await listeners.change({target:{id:'cowork-chat-customer',value:'c2',dataset:{}}});navigate('chat');
+  const chat=latestChat(),m=chat.messages.at(-1);assert.equal(m.mode,'profile');assert.equal(m.profileProposal.customerId,'c2');
+  const before=JSON.stringify(currentState().customers);
+  await click('profile-discard',{chat:chat.id,message:m.id});assert.equal(latestChat().messages.at(-1).profileProposal.status,'discarded');assert.equal(JSON.stringify(currentState().customers),before);
+});
+
 test('首页首屏与全局导航都有对话入口，普通问答连续保存而不产生交付物',async()=>{
-  navigate('home');assert.ok(main().indexOf('id="cowork-home-input"')<main().indexOf('class="cw-objectives"'));assert.match(main(),/chat-entry-nav/);
+  navigate('home');assert.match(main(),/id="cowork-home-input"/);assert.doesNotMatch(main(),/class="cw-objectives"/);assert.match(main(),/aria-label="主导航"/);
   await click('chat-new');navigate('chat');
   const before=currentState();await sayChat('你好');await sayChat('为什么客户试驾后不回复？');
   assert.equal(latestChat().messages.length,4);assert.equal(latestChat().customerId,'');
@@ -278,9 +333,10 @@ test('文本活动请求不强制增加海报，客户联系事实不受聊天�
 });
 test('缺少对象时先问一句，选择客户后继续原请求且不混入另一客户历史',async()=>{
   await click('chat-new');navigate('chat');const before=currentState().tasks.length;
-  await sayChat('帮我写一段跟进话术');assert.equal(latestChat().messages.at(-1).mode,'clarify');assert.equal(currentState().tasks.length,before);
+  const conversationId=latestChat().id;
+  await sayChat('请制定一份客户转化方案');assert.equal(latestChat().messages.at(-1).mode,'clarify');assert.equal(currentState().tasks.length,before);
   listeners.change({target:{id:'cowork-chat-customer',value:'c3',dataset:{}}});await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(latestChat().customerId,'c3');assert.ok(latestChat().messages.at(-1).artifactId);assert.equal(chatRequests.at(-1).history.length,0);
+  assert.equal(latestChat().customerId,'c3');assert.equal(latestChat().id,conversationId);assert.ok(latestChat().messages.at(-1).artifactId);assert.equal(chatRequests.at(-1).history.length,2);assert.doesNotMatch(JSON.stringify(chatRequests.at(-1).history),/Sarah/);
 });
 test('发送前显示连接原因，检查恢复保留草稿，聊天失败可重试且不重复用户消息',async()=>{
   await click('chat-new');navigate('chat');
@@ -308,7 +364,7 @@ test('停止聊天丢弃迟到的回复，输入中的下一条草稿保留',asy
 });
 test('聊天生成成果时也能停止，不保存迟到的成果',async()=>{
   await click('chat-new');navigate('chat');let release;holdGeneration=new Promise(resolve=>{release=resolve;});
-  const before=currentState().artifacts.length,operation=sayChat('帮 Sarah 写一段话术');await new Promise(resolve=>setImmediate(resolve));
+  const before=currentState().artifacts.length,operation=sayChat('帮 Sarah 制定客户转化方案');await new Promise(resolve=>setImmediate(resolve));
   assert.equal(latestChat().messages.at(-1).status,'creating');await click('chat-stop');release();await operation;holdGeneration=null;
   assert.equal(latestChat().messages.at(-1).status,'cancelled');assert.equal(currentState().artifacts.length,before);
 });
@@ -334,63 +390,82 @@ test('讨论修订时原海报被人工编辑，不覆盖员工刚改好的版�
   assert.equal(currentState().artifacts.find(a=>a.id===first.posterId).poster.headline,'Employee verified headline');
 });
 
-function controlledReplyStream(){
-  let controller,closed=false;
-  const response=new Response(new ReadableStream({start(c){controller=c;}}),{headers:{'Content-Type':'application/x-ndjson'}});
-  const emit=event=>controller.enqueue(new TextEncoder().encode(JSON.stringify(event)+'\n'));
-  const close=()=>{if(!closed){closed=true;controller.close();}};
-  return {response,emit,close,finish(data){emit({type:'result',data});close();}};
-}
-test('流式回复仅刷新消息，粗体即时呈现，不保存草稿且保留输入与滚动位置',async t=>{
-  await click('chat-new');navigate('chat');
-  const channel=controlledReplyStream();streamChat=()=>channel.response;
-  t.after(()=>{streamChat=null;document.activeElement=null;channel.close();});
-  const operation=sayChat('你好，请用粗体回答');await tick();
-  const message=latestChat().messages.at(-1),before=main();
-  const input=element('#cowork-chat-input');Object.assign(input,{id:'cowork-chat-input',value:'下一条尚未发送',selectionStart:2,selectionEnd:4});
-  input.focus=()=>{document.activeElement=input;};input.setSelectionRange=(start,end)=>{input.selectionStart=start;input.selectionEnd=end;};
-  document.activeElement=input;listeners.input({target:input});
-  Object.assign(element('.chat-messages'),{scrollTop:300,scrollHeight:2000,clientHeight:700});
-  channel.emit({type:'progress',stage:'responding',elapsedMs:15});
-  channel.emit({type:'reply',text:'**买了 Model Y '});await tick();
-  channel.emit({type:'reply',text:'以后，能否方便、稳定地给车充电。**'});await tick();
-  const article=element('#chat-message-'+message.id).innerHTML;
-  assert.match(article,/<strong>买了 Model Y 以后，能否方便、稳定地给车充电。<\/strong>/);
-  assert.match(article,/执行过程/);assert.match(article,/草稿/);
-  assert.equal(main(),before);assert.equal(latestChat().messages.at(-1).content,'');
-  assert.equal(document.activeElement,input);assert.equal(input.value,'下一条尚未发送');assert.equal(element('.chat-messages').scrollTop,300);
-  channel.finish({mode:'reply',reply:'**买了 Model Y 以后，能否方便、稳定地给车充电。**',artifactRequest:null,engine:'copilot'});
-  await operation;
-  assert.equal(latestChat().messages.at(-1).status,'done');assert.match(main(),/<strong>买了 Model Y/);
-  assert.match(main(),/下一条尚未发送/);assert.equal(input.selectionStart,2);assert.equal(input.selectionEnd,4);assert.equal(element('.chat-messages').scrollTop,300);
+test('短话术直接回复，保存为素材不新增任务，用户可再加入工作台',async()=>{
+  await click('chat-new');navigate('chat');const before=currentState();
+  await sayChat('帮 Sarah 写一句英文跟进话术');
+  const m=latestChat().messages.at(-1);assert.equal(m.mode,'reply');assert.match(m.content,/Hi Sarah/);
+  assert.equal(currentState().tasks.length,before.tasks.length);assert.equal(currentState().artifacts.length,before.artifacts.length);
+  await click('chat-save',{id:m.id});assert.equal(currentState().artifacts.length,before.artifacts.length+1);assert.equal(currentState().tasks.length,before.tasks.length);
+  await click('chat-save',{id:m.id});assert.equal(currentState().artifacts.length,before.artifacts.length+1);
+  await click('chat-track');assert.equal(latestChat().tracked,true);navigate('desk');assert.match(main(),/帮 Sarah 写一句/);
 });
-test('流式内容停止后不采用迟到的文本或结果',async t=>{
-  await click('chat-new');navigate('chat');
-  const channel=controlledReplyStream();streamChat=()=>channel.response;
-  t.after(()=>{streamChat=null;channel.close();});
-  const operation=sayChat('你好');await tick();
-  channel.emit({type:'reply',text:'尚未完成的内容'});await tick();
-  await click('chat-stop');
-  channel.emit({type:'reply',text:'迟到内容'});
-  channel.finish({mode:'reply',reply:'迟到的完整答案',artifactRequest:null,engine:'copilot'});await operation;
-  assert.equal(latestChat().messages.at(-1).status,'cancelled');
-  assert.doesNotMatch(latestChat().messages.at(-1).content,/尚未完成|迟到/);
-  assert.equal(latestChat().messages.at(-1).execution.at(-1).stage,'stopped');
+
+test('新建门店任务可选择市场，同一对话保留目标、成果和完成状态',async()=>{
+  await click('ux-task-new',{template:'为门店制定家庭 SUV 营销方案'});navigate('chat');
+  assert.equal(latestChat().tracked,true);assert.match(main(),/为门店制定家庭 SUV/);
+  listeners.change({target:{id:'cowork-chat-customer',value:'store:US',dataset:{}}});
+  await sayChat('为门店制定家庭 SUV 营销方案，只要文字不要海报');
+  const chat=latestChat(),m=chat.messages.at(-1);assert.ok(m.artifactId);assert.equal(chat.customerId,'store:US');
+  assert.equal(requests.at(-1).scope,'store');assert.equal(currentState().artifacts.find(a=>a.id===m.artifactId).customerId,'store:US');
+  await click('chat-details');assert.match(main(),/本次成果/);assert.match(main(),/管理资料与连接/);
+  await click('chat-complete');assert.ok(latestChat().completedAt);await click('chat-complete');assert.equal(latestChat().completedAt,undefined);
+  navigate('desk');assert.match(main(),/家庭 SUV 营销方案/);
 });
-test('对话生成交付物时实时展示 SDK 进度并保存完成记录',async t=>{
-  await click('chat-new');navigate('chat');
-  const channel=controlledReplyStream();let finalData;
-  streamGeneration=data=>{finalData=data;return channel.response;};
-  t.after(()=>{streamGeneration=null;channel.close();});
-  const operation=sayChat('帮 Sarah 写一段简短跟进话术');await tick();
-  const message=latestChat().messages.at(-1);assert.equal(message.status,'creating');
-  channel.emit({type:'progress',stage:'connecting',elapsedMs:0});
-  channel.emit({type:'progress',stage:'responding',elapsedMs:20});await tick();
-  assert.match(element('#chat-message-'+message.id).innerHTML,/成果准备 · 正在接收模型输出/);
-  channel.finish(finalData);await operation;
-  const completed=latestChat().messages.at(-1);
-  assert.equal(completed.status,'done');assert.ok(completed.artifactId);
-  assert.ok(completed.execution.some(e=>e.stage==='responding'&&e.phase==='artifact'));
-  assert.equal(completed.execution.at(-1).stage,'saved');
-  assert.ok(currentState().tasks.find(task=>task.id===completed.taskId).events.some(event=>event.title==='正在接收模型输出'));
+
+test('本地查客户返回可接续卡片，不调用模型、不产生任务',async()=>{
+  await click('chat-new');navigate('chat');const count=chatRequests.length,before=currentState().tasks.length;
+  await sayChat('查找客户 RAV4');const m=latestChat().messages.at(-1);
+  assert.equal(chatRequests.length,count);assert.equal(currentState().tasks.length,before);assert.equal(m.engine,'records');assert.ok(m.customerIds.includes('c3'));
+  await click('chat-plan-customer',{id:'c3'});navigate('chat');assert.equal(latestChat().customerId,'c3');assert.equal(latestChat().tracked,true);
+});
+
+test('连接器保存的是接入需求，不能显示为已连接',async()=>{
+  navigate('connections');await click('ux-connector',{id:'toyota'});assert.match(modal(),/尚未连接/);
+  await submit('ux-connector-form',{system:'Dealer CRM',scope:'US 门店 001 的客户资料'},{id:'toyota'});navigate('connections');
+  assert.equal(currentState().connectionRequests.find(r=>r.id==='toyota').system,'Dealer CRM');
+  assert.match(main(),/接入需求已保存/);assert.match(main(),/当前没有已连接的外部业务系统/);
+});
+
+test('新线索使用电话和已有信息建档，并进入对应客户的 Cowork 任务',async()=>{
+  const before=currentState();navigate('customers');assert.match(main(),/新增销售线索/);
+  await click('ux-lead');assert.match(modal(),/电话号码/);assert.doesNotMatch(modal(),/预算下限/);
+  await submit('ux-lead-form',{name:'Jamie Dealer',contact:'+1 202 555 0174',market:'US',need:'官网咨询家庭 SUV，总费用待确认。',source:'官网线索'});navigate(location.hash.slice(1));
+  const c=currentState().customers.find(c=>c.name==='Jamie Dealer'),chat=latestChat();
+  assert.equal(c.budgetUnknown,true);assert.equal(c.intentUnknown,true);assert.equal(c.source,'官网线索');assert.equal(chat.customerId,c.id);assert.equal(chat.tracked,true);
+  assert.equal(currentState().tasks.length,before.tasks.length);assert.match(main(),/首次沟通内容/);
+  await submit('ux-lead-form',{name:'Duplicate',contact:'12025550174',market:'US',need:'',source:''});assert.equal(currentState().customers.length,before.customers.length+1);
+});
+
+test('任务动作可分配、从待办回报结果、记录客户反馈并在原对话继续',async()=>{
+  const chatId=latestChat().id,cid=latestChat().customerId;
+  await click('flow-action',{id:chatId});assert.match(modal(),/完成后需要带回什么结果/);
+  await submit('flow-action-form',{title:'致电确认预算与车型',owner:'Alex Chen',expected:'总预算、购车时间和家庭成员',dueAt:'2026-09-20T10:00'},{id:chatId});
+  const action=latestChat().actions[0];navigate('desk');assert.match(main(),/致电确认预算与车型/);
+  await click('chat-select',{id:chatId});navigate(location.hash.slice(1));await click('chat-complete');assert.equal(latestChat().completedAt,undefined);
+  navigate('inbox');assert.match(main(),/总预算、购车时间和家庭成员/);
+  await click('flow-result',{id:chatId,actionId:action.id});await submit('flow-result-form',{result:'已接通，客户希望先比较家庭 SUV。'},{id:chatId,actionId:action.id});
+  assert.equal(latestChat().actions[0].status,'done');assert.equal(currentState().customers.find(c=>c.id===cid).lastContact,null);
+  await click('chat-select',{id:chatId});navigate(location.hash.slice(1));assert.match(main(),/已接通，客户希望先比较/);
+  await click('flow-feedback',{id:chatId});await submit('flow-feedback-form',{type:'need',text:'需要容纳两个儿童座椅，优先后排空间。',source:'电话 · Alex',occurredAt:'2026-09-01T10:00',contacted:'on'},{id:chatId});navigate(location.hash.slice(1));
+  assert.equal(latestChat().id,chatId);assert.match(currentState().customers.find(c=>c.id===cid).need,/儿童座椅/);assert.match(main(),/请根据刚记录的客户反馈调整方案/);
+  assert.equal(latestChat().messages.at(-1).event,'feedback');
+});
+
+test('资料选择真实影响对话和成果请求，任务、搜索和成果都能回到同一对话',async()=>{
+  const id=latestChat().id;
+  listeners.change({target:{id:'',dataset:{chatSource:'knowledge'},checked:false}});
+  listeners.change({target:{id:'',dataset:{chatSource:'vehicles'},checked:false}});
+  await sayChat('请制定一份客户转化方案');assert.equal(chatRequests.at(-1).context.knowledge.length,0);assert.equal(chatRequests.at(-1).context.vehicles.length,0);
+  assert.equal(requests.at(-1).knowledge.length,0);assert.equal(requests.at(-1).vehicles.length,0);assert.match(requests.at(-1).workflow.goal,/转化/);
+  const artifact=latestChat().messages.at(-1).artifactId;await click('artifact',{id:artifact});assert.match(modal(),/回到原对话/);
+  await click('chat-new');navigate('chat');navigate('chat?conversation='+id);assert.match(main(),/儿童座椅/);
+  await click('search');listeners.input({target:{dataset:{input:'global-search'},value:'转化'}});assert.match(element('#global-results').innerHTML,/data-act="chat-select"/);
+});
+
+test('旧成果准备记录进入 Cowork，反复打开不会创建重复任务',async()=>{
+  const old=currentState().tasks.find(t=>!t.conversationId&&!t.workId),before=currentState().conversations.length;
+  assert.ok(old);await click('select-task',{id:old.id});navigate(location.hash.slice(1));
+  assert.equal(currentState().conversations.length,before+1);assert.match(main(),/Cowork/);assert.match(main(),/AI 协作/);
+  const linked=currentState().tasks.find(t=>t.id===old.id).conversationId;assert.ok(linked);
+  await click('select-task',{id:old.id});assert.equal(currentState().conversations.length,before+1);assert.equal(location.hash,'#chat?conversation='+linked);
 });

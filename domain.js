@@ -38,7 +38,7 @@ export function calculateQuote({ price, discount = 0, fee = 0, taxRate = 0, down
   return { subtotal, tax, total, principal, monthly: Math.round(monthly * 100) / 100 };
 }
 export function vehicleMatches(customer, vehicles) {
-  return vehicles.filter(v => v.market === customer.market && v.currency === customer.currency).sort((a, b) => Number(b.name === customer.vehicle) - Number(a.name === customer.vehicle) || Math.abs(a.price - customer.budget[1]) - Math.abs(b.price - customer.budget[1]));
+  return vehicles.filter(v => v.market === customer.market && v.currency === customer.currency).sort((a, b) => Number(b.name === customer.vehicle) - Number(a.name === customer.vehicle) || (customer.budgetUnknown?0:Math.abs(a.price - customer.budget[1]) - Math.abs(b.price - customer.budget[1])));
 }
 export function draftArtifact(kind, customer, vehicles, instruction = '', knowledge = [], options = {}) {
   const c = customer;

@@ -8,6 +8,7 @@ import {normalizeRequest,parseArtifact} from '../server/protocol.js';
 import {CopilotGenerator} from '../server/copilot.js';
 import {createApplication,configFromEnv} from '../server/http.js';
 import {initializeConversations,mentionedCustomer} from '../chat-ui.js';
+import {sendChatMessage,generateAIArtifact} from '../ai-client.js';
 
 const context=()=>{const s=initializeCowork(seedState());return {kind:'followup',customer:s.customers[0],vehicles:s.vehicles,knowledge:s.knowledge,workspaceName:s.settings.name,prompt:'测试'};};
 const artifactRequest={kind:'followup',prompt:'为 Sarah 写简短英文话术',needsPoster:false,revision:false,language:'en'};
@@ -41,7 +42,7 @@ test('缺少客户的成果请求转为澄清，不选取默认客户',()=>{
 test('不能从聊天结果升级成外发、批准或未经支持的任务',()=>{
   const r=normalizeChatRequest({message:'写一段话术',context:context()});
   const result=parseChatReply(JSON.stringify({mode:'artifact',reply:'我来准备。',artifactRequest:{...artifactRequest,status:'approved',customerId:'other',send:true}}),r);
-  assert.deepEqual(result.artifactRequest,artifactRequest);
+  assert.deepEqual(result.artifactRequest,{...artifactRequest,delivery:'asset'});
   assert.throws(()=>parseChatReply(JSON.stringify({mode:'artifact',reply:'发送',artifactRequest:{...artifactRequest,kind:'send'}}),r));
   assert.throws(()=>parseChatReply('not JSON',r));
 });
@@ -63,6 +64,27 @@ test('SDK 对话带连续历史并使用独立问答协议，复用并发与清�
   const generator=new CopilotGenerator({clientFactory:async()=>({start:async()=>{},stop:async()=>{},createSession:async c=>{cfg=c;return {sendAndWait:async p=>{prompt=p.prompt;return {data:{content:JSON.stringify({mode:'reply',reply:'是的，我们继续讨论充电。',artifactRequest:null})}};},disconnect:async()=>{done++;}};}})});
   const r=await generator.chat(normalizeChatRequest({message:'继续说',history:[{role:'user',content:'讨论公寓充电'}]}));
   assert.equal(r.mode,'reply');assert.match(prompt,/公寓充电/);assert.match(cfg.systemMessage.content,/Do not force every message/);assert.deepEqual(cfg.availableTools,[]);assert.equal(done,1);assert.equal(generator.active,0);await generator.stop();
+});
+test('SDK 画像模式仍逐步流式返回顶层公开回复，私有字段与子代理消息不转发',async t=>{
+  let release,started;const gate=new Promise(resolve=>{release=resolve;}),ready=new Promise(resolve=>{started=resolve;});
+  t.after(()=>release());
+  const handlers=new Map(),events=[],profile={mode:'profile',reply:'**画像草稿**：需要两个儿童座椅。',artifactRequest:null,profileProposal:{facts:[{field:'need',value:'需要两个儿童座椅',evidence:'需要两个儿童座椅',type:'record'}]}};
+  const raw=JSON.stringify({privateTrace:{reply:'PRIVATE_TRACE'},...profile});
+  const generator=new CopilotGenerator({clientFactory:async()=>({start:async()=>{},stop:async()=>{},createSession:async()=>({
+    on:(type,handler)=>{handlers.set(type,handler);return ()=>handlers.delete(type);},
+    sendAndWait:async()=>{
+      handlers.get('assistant.message_delta')({data:{messageId:'subagent',parentToolCallId:'tool',deltaContent:'{"reply":"PRIVATE_SUBAGENT"}'}});
+      for(const deltaContent of raw)handlers.get('assistant.message_delta')({data:{messageId:'public',deltaContent}});
+      started();await gate;return {data:{content:raw}};
+    },disconnect:async()=>{}
+  })})});
+  const pending=generator.chat(normalizeChatRequest({message:'请记住，客户需要两个儿童座椅',context:context()}),{onEvent:event=>events.push(event)});
+  await ready;
+  assert.deepEqual([...handlers.keys()],['assistant.turn_start','assistant.message_delta','assistant.message']);
+  assert.equal(events.filter(event=>event.type==='reply').map(event=>event.text).join(''),profile.reply);
+  assert.doesNotMatch(JSON.stringify(events),/PRIVATE_|profileProposal|reasoning/);assert.ok(!events.some(event=>event.stage==='complete'));
+  release();const result=await pending;assert.equal(result.mode,'profile');assert.deepEqual(result.profileProposal,profile.profileProposal);
+  assert.equal(events.at(-1).stage,'complete');assert.equal(handlers.size,0);assert.equal((await generator.status()).verified,true);await generator.stop();
 });
 test('客户姓名自动关联要求唯一匹配，刷新只将进行中的消息标记中断',()=>{
   const s=seedState();assert.equal(mentionedCustomer('Sarah 为什么犹豫',s.customers)?.id,'c1');assert.equal(mentionedCustomer('Sarah 和 Marcus 的区别',s.customers),null);
@@ -86,17 +108,29 @@ test('真实聊天服务失败不会降级成演示回复',async t=>{
   const r=await fetch(`http://127.0.0.1:${server.address().port}/api/chat`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:'你好'})});
   assert.equal(r.status,500);const result=await r.json();assert.equal(result.mode,undefined);assert.equal(result.engine,undefined);assert.doesNotMatch(JSON.stringify(result),/private-provider-error/);
 });
-test('免登录部署可使用真实聊天路由，仍拒绝跨站请求',async t=>{
-  let calls=0;
-  const generator={chat:async()=>{calls++;return {mode:'reply',reply:'真实聊天路由',artifactRequest:null,engine:'copilot',model:'test-model'};}};
-  const config=configFromEnv({NODE_ENV:'production',HOST:'0.0.0.0',PUBLIC_ORIGIN:'http://127.0.0.1:4174',MOTIVE_AUTH_MODE:'none'});
-  const server=createApplication({config,generator});server.listen(0,'127.0.0.1');await once(server,'listening');
-  t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
-  const base=`http://127.0.0.1:${server.address().port}`,headers={'Content-Type':'application/json',Host:'127.0.0.1:4174',Origin:config.publicOrigin};
-  assert.equal((await (await fetch(base+'/healthz')).json()).version,'1.3.0');
-  for(const path of ['/chat-ui.js','/chat.css'])assert.equal((await fetch(base+path,{headers})).status,200);
-  const response=await fetch(base+'/api/chat',{method:'POST',headers,body:JSON.stringify({message:'你好'})});
-  assert.equal(response.status,200);assert.equal((await response.json()).engine,'copilot');assert.equal(calls,1);
-  const denied=await fetch(base+'/api/chat',{method:'POST',headers:{...headers,Origin:'https://elsewhere.example'},body:JSON.stringify({message:'你好'})});
-  assert.equal(denied.status,403);assert.equal(calls,1);
+test('浏览器流式与旧 JSON 调用保留画像、任务交付与完整 v1.6 请求数据',async t=>{
+  const original=globalThis.fetch;t.after(()=>{globalThis.fetch=original;});
+  const payload={message:'请记住，客户需要两个儿童座椅',context:context(),history:[{role:'user',content:'客户说需要两个儿童座椅'}]};
+  payload.context.businessContext={source:'Snapshot',totals:{customers:2},actions:[{owner:'Sales',action:'Confirm visit'}]};
+  payload.context.cohort=[{id:'c1',language:'en',timezone:'America/New_York',need:'Family space'}];
+  const profile={mode:'profile',reply:'画像草稿等待确认。',artifactRequest:null,profileProposal:{facts:[{field:'need',value:'两个儿童座椅',evidence:'需要两个儿童座椅',type:'record'}]}},events=[];
+  globalThis.fetch=async(url,options)=>{
+    assert.equal(url,'/api/chat');assert.deepEqual(JSON.parse(options.body),payload);assert.equal(options.headers.Accept,'application/x-ndjson');
+    return new Response([{type:'reply',text:'画像草稿'},{type:'result',data:profile}].map(e=>JSON.stringify(e)+'\n').join(''),{headers:{'Content-Type':'application/x-ndjson'}});
+  };
+  assert.deepEqual(await sendChatMessage(payload,{onEvent:e=>events.push(e)}),profile);assert.equal(events[0].text,'画像草稿');
+  const task={mode:'artifact',reply:'准备门店计划。',artifactRequest:{...artifactRequest,delivery:'task'}};
+  globalThis.fetch=async(_url,options)=>{assert.equal(options.headers.Accept,undefined);assert.deepEqual(JSON.parse(options.body),payload);return Response.json(task);};
+  assert.deepEqual(await sendChatMessage(payload),task);
+  const store={...payload.context,scope:'store',customer:{...payload.context.customer,id:'store:US',name:'US store'}},artifact={id:'store-artifact',scope:'store',sections:[]};
+  globalThis.fetch=async(url,options)=>{assert.equal(url,'/api/generate');assert.deepEqual(JSON.parse(options.body),store);return Response.json({artifact});};
+  assert.deepEqual(await generateAIArtifact(store,{onEvent:()=>assert.fail('JSON fallback has no stream events')}),artifact);
+});
+test('浏览器无效 UTF-8 流使用安全错误，调用方取消仍然保留 AbortError',async t=>{
+  const original=globalThis.fetch;t.after(()=>{globalThis.fetch=original;});
+  globalThis.fetch=async()=>new Response(new Uint8Array([255,10]),{headers:{'Content-Type':'application/x-ndjson'}});
+  await assert.rejects(sendChatMessage({message:'hi'},{onEvent:()=>{}}),{code:'INVALID_STREAM'});
+  const controller=new AbortController();controller.abort();
+  globalThis.fetch=async(_url,options)=>{options.signal.throwIfAborted();};
+  await assert.rejects(sendChatMessage({message:'hi'},{signal:controller.signal}),{name:'AbortError'});
 });

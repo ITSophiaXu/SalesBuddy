@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {once} from 'node:events';
+import {request as httpRequest} from 'node:http';
 import {seedState} from '../data.js';
 import {normalizeRequest,parseArtifact,AppError} from '../server/protocol.js';
 import {CopilotGenerator} from '../server/copilot.js';
@@ -43,6 +44,23 @@ test('SDK 每个任务创建独立会话、拒绝工具权限并在结束时清�
   assert.notEqual((await configs[0].onPermissionRequest({kind:'shell'})).kind,'approved');assert.match(prompts[0],/上一版内容/);assert.match(prompts[0],/两个孩子/);
   await generator.stop();
 });
+test('SDK 成果只流式发送公开生命周期，不泄露成果 JSON 或其他模型字段',async()=>{
+  const handlers=new Map(),events=[];let disconnected=false;
+  const raw=JSON.stringify({...output(),reply:'PRIVATE_ARTIFACT_REPLY'});
+  const generator=new CopilotGenerator({clientFactory:async()=>({start:async()=>{},stop:async()=>{},createSession:async config=>{
+    assert.equal(config.streaming,true);
+    return {on:(type,handler)=>{handlers.set(type,handler);return ()=>handlers.delete(type);},sendAndWait:async()=>{
+      handlers.get('assistant.turn_start')({data:{}});
+      handlers.get('assistant.message_delta')({data:{messageId:'artifact',deltaContent:raw}});
+      handlers.get('assistant.message')({data:{content:raw}});
+      return {data:{content:raw}};
+    },disconnect:async()=>{disconnected=true;}};
+  }})});
+  const artifact=await generator.generate(normalizeRequest(input()),{onEvent:event=>{if(event.stage==='complete')assert.equal(disconnected,true);events.push(event);}});
+  assert.equal(artifact.engine,'copilot');assert.ok(events.every(event=>event.type==='progress'));
+  assert.deepEqual(events.map(event=>event.stage),['connecting','session_ready','submitted','model_running','responding','validating','complete']);
+  assert.doesNotMatch(JSON.stringify(events),/PRIVATE_|sections|reasoning/);assert.equal(handlers.size,0);await generator.stop();
+});
 test('并发限制与取消不会占用后续任务名额',async()=>{
   let release;const waiting=new Promise(r=>{release=r;});let destroyed=0,aborted=0;
   const generator=new CopilotGenerator({maxConcurrent:1,clientFactory:async()=>({start:async()=>{},stop:async()=>{},createSession:async()=>({sendAndWait:async()=>{await waiting;return {data:{content:JSON.stringify(output())}};},abort:async()=>{aborted++;},disconnect:async()=>{destroyed++;}})})});
@@ -67,17 +85,67 @@ test('登录使用 HttpOnly 会话，支持过期、退出和失败次数限制'
 test('生产环境拒绝无密码、公网明文和未配置来源',()=>{
   assert.throws(()=>createApplication({config:{...configFromEnv({}),production:true},generator:{}}),/password/);
   assert.throws(()=>createApplication({config:{...configFromEnv({}),password:'long-password-value',publicOrigin:'http://public.example.com'},generator:{}}),/HTTPS/);
-  assert.throws(()=>createApplication({config:{...configFromEnv({}),production:true,authMode:'none',publicOrigin:'https://public.example.com'},generator:{}}),/loopback/);
 });
-test('SSH 隧道回环来源可显式关闭工作区登录',async t=>{
-  const generator={status:async()=>({provider:'copilot',ready:true,model:'test-model'})};
-  const server=createApplication({config:{...configFromEnv({}),production:true,host:'0.0.0.0',authMode:'none',publicOrigin:'http://127.0.0.1:4173'},generator});
-  server.listen(0,'127.0.0.1');await once(server,'listening');
+test('免密码必须显式选择，生产来源与默认密码保护仍然生效',()=>{
+  assert.equal(configFromEnv({}).authMode,'password');
+  assert.throws(()=>createApplication({config:configFromEnv({MOTIVE_AUTH_MODE:'disabled'}),generator:{}}),/MOTIVE_AUTH_MODE/);
+  assert.throws(()=>createApplication({config:configFromEnv({HOST:'0.0.0.0'}),generator:{}}),/password/);
+  assert.throws(()=>createApplication({config:configFromEnv({NODE_ENV:'production',MOTIVE_AUTH_MODE:'none'}),generator:{}}),/PUBLIC_ORIGIN/);
+  assert.throws(()=>createApplication({config:configFromEnv({NODE_ENV:'production',MOTIVE_AUTH_MODE:'none',PUBLIC_ORIGIN:'http://public.example'}),generator:{}}),/HTTPS/);
+});
+test('显式免密码生产工作区可直达，但不能绕过主机、来源与跨站检查',async t=>{
+  const request=(url,{method='GET',headers,body}={})=>new Promise((resolve,reject)=>{
+    const req=httpRequest(url,{method,headers},res=>{
+      const chunks=[];res.on('data',chunk=>chunks.push(chunk));res.on('error',reject);
+      res.on('end',()=>resolve(new Response(Buffer.concat(chunks),{status:res.statusCode,headers:res.headers})));
+    });
+    req.on('error',reject);req.end(body);
+  });
+  const origin='https://workspace.example',config=configFromEnv({HOST:'0.0.0.0',NODE_ENV:'production',MOTIVE_AUTH_MODE:'none',MOTIVE_PASSWORD:'unused-workspace-password',PUBLIC_ORIGIN:origin,AI_PROVIDER:'demo'});
+  const server=createApplication({config,generator:{}});server.listen(0,'127.0.0.1');await once(server,'listening');
   t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
-  const base=`http://127.0.0.1:${server.address().port}`,headers={Host:'127.0.0.1:4173'};
-  assert.equal((await fetch(base+'/',{headers})).status,200);
-  const status=await fetch(base+'/api/status',{headers});assert.equal(status.status,200);assert.equal((await status.json()).authentication,false);
-  const login=await fetch(base+'/login',{headers,redirect:'manual'});assert.equal(login.status,303);assert.equal(login.headers.get('location'),'/');
+  const base=`http://127.0.0.1:${server.address().port}`,headers={Host:'workspace.example'};
+  assert.equal((await request(base+'/',{headers})).status,200);
+  assert.equal((await request(base+'/login',{headers})).status,303);
+  const status=await (await request(base+'/api/status',{headers})).json();
+  assert.equal(status.authentication,false);assert.equal(status.provider,'demo');
+  assert.equal((await request(base+'/api/status')).status,403);
+  const options={method:'POST',headers:{...headers,'Content-Type':'application/json',Origin:origin},body:JSON.stringify({message:'你好'})};
+  assert.equal((await request(base+'/api/chat',options)).status,200);
+  assert.equal((await request(base+'/api/chat',{...options,headers:{...options.headers,Origin:'https://elsewhere.example'}})).status,403);
+  assert.equal((await request(base+'/api/chat',{...options,headers:{...options.headers,'Sec-Fetch-Site':'cross-site'}})).status,403);
+  for(const path of ['/ux.css','/workspace-model.js','/workspace-ui.js','/task-flow.js','/task-ui.js','/customer-profile.js','/profile-ui.js','/markdown.js','/execution.js']){
+    assert.equal((await request(base+path,{headers})).status,200,path);
+  }
+});
+test('HTTP JSON 与 NDJSON 协商保留门店、客群、经营快照，不把模型失败替换成演示',async t=>{
+  const raw={...input(),scope:'store',customer:{...input().customer,id:'store:US',name:'US store'},needsPoster:false,
+    cohort:[{id:'c1',language:'en',timezone:'America/New_York',channel:'whatsapp',need:'Family space'}],
+    businessContext:{source:'CRM snapshot',asOf:'2026-09-14',stores:[{store:'US',customers:7,booked:2}],totals:{customers:7,booked:2},missing:['Confirmed budget'],actions:[{store:'US',owner:'Store lead',action:'Confirm budget',dueAt:'2026-09-20',status:'pending'}]}};
+  let calls=0;
+  const generator={generate:async(request,{onEvent})=>{
+    calls++;assert.deepEqual(request,normalizeRequest(raw));
+    onEvent?.({type:'progress',stage:'responding',elapsedMs:12,private:'PRIVATE_MODEL_DATA'});
+    onEvent?.({type:'assistant.reasoning_delta',text:'PRIVATE_MODEL_DATA'});
+    return parseArtifact(JSON.stringify(output()),request,'real-provider-fixture');
+  }};
+  const server=createApplication({config:configFromEnv({}),generator});server.listen(0,'127.0.0.1');await once(server,'listening');
+  t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
+  const base=`http://127.0.0.1:${server.address().port}`;
+  for(const [accept,streaming] of [['application/json',false],['application/x-ndjson; q=0',false],['application/json;q=1, application/x-ndjson;q=0.5',false],['application/x-ndjson; charset=utf-8',true]]){
+    const response=await fetch(base+'/api/generate',{method:'POST',headers:{'Content-Type':'application/json',Accept:accept},body:JSON.stringify(raw)});
+    assert.equal(response.status,200);
+    const text=await response.text();assert.doesNotMatch(text,/PRIVATE_MODEL_DATA/);
+    const result=streaming?JSON.parse(text.trim().split('\n').at(-1)).data:JSON.parse(text);
+    assert.match(response.headers.get('Content-Type'),streaming?/application\/x-ndjson/:/application\/json/);
+    assert.equal(result.artifact.engine,'copilot');assert.equal(result.artifact.scope,'store');assert.equal(result.artifact.customerId,'store:US');
+  }
+  assert.equal(calls,4);
+  generator.generate=async()=>{throw new Error('PRIVATE_PROVIDER_ERROR');};
+  for(const accept of ['application/json','application/x-ndjson']){
+    const response=await fetch(base+'/api/generate',{method:'POST',headers:{'Content-Type':'application/json',Accept:accept},body:JSON.stringify(raw)});
+    const text=await response.text();assert.doesNotMatch(text,/PRIVATE_PROVIDER_ERROR|"artifact"|"engine":"demo"/);assert.match(text,/INTERNAL_ERROR/);
+  }
 });
 test('真实 HTTP 路由验证登录、来源、请求校验、交付物与静态文件隔离',async t=>{
   let calls=0;const generator={status:async()=>({provider:'copilot',ready:true,model:'test-model'}),generate:async request=>{calls++;return parseArtifact(JSON.stringify(output()),request,'test-model');}};

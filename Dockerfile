@@ -5,12 +5,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
-# Versions are resolved once by prepare.sh and saved in the deployment manifest.
+# Build arguments must agree with the committed dependency lock.
 RUN test -n "$COPILOT_SDK_VERSION" && test -n "$COPILOT_CLI_VERSION" \
-    && npm install --omit=dev --save-exact "@github/copilot-sdk@${COPILOT_SDK_VERSION}" \
-    && npm install --global "@github/copilot@${COPILOT_CLI_VERSION}" \
+    && node -e 'const p=require("./package.json").dependencies;if(p["@github/copilot-sdk"]!==process.argv[1]||p["@github/copilot"]!==process.argv[2])process.exit(1)' "$COPILOT_SDK_VERSION" "$COPILOT_CLI_VERSION" \
+    && npm ci --omit=dev --no-audit --no-fund \
+    && ln -s /app/node_modules/.bin/copilot /usr/local/bin/copilot \
     && npm cache clean --force
-COPY index.html styles.css cowork.css chat.css app.js cowork.js cowork-ui.js chat-ui.js ai-client.js markdown.js execution.js poster.js domain.js data.js server.js ./
+COPY index.html styles.css cowork.css chat.css ux.css app.js cowork.js cowork-ui.js chat-ui.js workspace-model.js workspace-ui.js task-flow.js task-ui.js customer-profile.js profile-ui.js ai-client.js markdown.js execution.js poster.js domain.js data.js server.js ./
 COPY assets ./assets
 COPY server ./server
 COPY scripts/check-copilot.mjs ./scripts/check-copilot.mjs
