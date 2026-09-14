@@ -6,7 +6,7 @@ $version = (Get-Content -LiteralPath (Join-Path $projectRoot 'package.json') -Ra
 $releaseName = 'Motive-SalesCowork-v' + $version + '-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.zip'
 $archivePath = Join-Path $outputDirectory $releaseName
 $partialPath = $archivePath + '.partial'
-$files = @('index.html', 'styles.css', 'cowork.css', 'cowork.js', 'cowork-ui.js', 'chat-ui.js', 'chat.css', 'ux.css', 'workspace-model.js', 'workspace-ui.js', 'task-flow.js', 'task-ui.js', 'customer-profile.js', 'profile-ui.js', 'app.js', 'ai-client.js', 'poster.js', 'domain.js', 'data.js', 'server.js', 'package.json', '.gitignore', '.gitattributes', '.env.example', '.dockerignore', 'Dockerfile', 'compose.yaml', 'compose.tls.yaml', 'README.md', 'Motive-垂直Cowork-UX重构方案-v2.md', 'DEPLOYMENT.md', '开始使用.md', '安装并连接Copilot.cmd', '启动Motive.cmd')
+$files = @('vehicle-comparison.js', 'artifact-workbench.js', 'workbench-ui.js', 'experience-model.js', 'experience-ui.js', 'experience.css', 'Motive-三角色Cowork-UX设计-v3.md', 'index.html', 'styles.css', 'cowork.css', 'cowork.js', 'cowork-ui.js', 'chat-ui.js', 'chat.css', 'ux.css', 'workspace-model.js', 'workspace-ui.js', 'task-flow.js', 'task-ui.js', 'customer-profile.js', 'profile-ui.js', 'app.js', 'ai-client.js', 'poster.js', 'domain.js', 'data.js', 'server.js', 'package.json', '.gitignore', '.gitattributes', '.env.example', '.dockerignore', 'Dockerfile', 'compose.yaml', 'compose.tls.yaml', 'README.md', 'Motive-垂直Cowork-UX重构方案-v2.md', 'DEPLOYMENT.md', '开始使用.md', '安装并连接Copilot.cmd', '启动Motive.cmd')
 $files += @('markdown.js', 'execution.js')
 foreach ($directory in @('assets', 'server', 'deploy', 'tests', 'scripts')) {
     $directoryPath = Join-Path $projectRoot $directory
@@ -17,6 +17,7 @@ foreach ($directory in @('assets', 'server', 'deploy', 'tests', 'scripts')) {
     }
 }
 if (Test-Path -LiteralPath (Join-Path $projectRoot 'package-lock.json')) { $files += 'package-lock.json' }
+if (Test-Path -LiteralPath (Join-Path $projectRoot 'artifacts/Motive-Vehicle-Comparison-Demo.html')) { $files += 'artifacts/Motive-Vehicle-Comparison-Demo.html' }
 if (Test-Path -LiteralPath (Join-Path $projectRoot 'artifacts/motive-posters-preview.png')) { $files += 'artifacts/motive-posters-preview.png' }
 $files = @($files | Sort-Object -Unique)
 $hashes = [ordered]@{}

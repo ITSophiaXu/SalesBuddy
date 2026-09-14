@@ -1,3 +1,4 @@
+import {normalizeComparison,comparisonSnapshot} from '../vehicle-comparison.js';
 import { randomUUID } from 'node:crypto';
 import { vehicleMatches } from '../domain.js';
 
@@ -20,7 +21,7 @@ function amount(value, name) {
 }
 export function normalizeRequest(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new AppError('INVALID_INPUT', '请提供有效的协作请求。');
-  if (!['followup', 'quote', 'testdrive', 'campaign', 'aftersales','intake','relationship','review','regional'].includes(body.kind)) throw new AppError('INVALID_INPUT', '不支持的协作场景。');
+  if (!['followup', 'quote', 'testdrive', 'campaign', 'aftersales','intake','relationship','review','regional','comparison'].includes(body.kind)) throw new AppError('INVALID_INPUT', '不支持的协作场景。');
   const raw = body.customer;
   if (!raw || typeof raw !== 'object') throw new AppError('INVALID_INPUT', '缺少客户资料。');
   const scope=body.scope==='store'?'store':'customer';
@@ -46,6 +47,7 @@ export function normalizeRequest(body) {
     id: text(v?.id,'车源 ID',100,true), name:text(v?.name,'车型',200,true), market:text(v?.market,'车源市场',8,true),
     currency:text(v?.currency,'车源币种',8,true), price:amount(v?.price,'车价'), trim:text(v?.trim,'配置',300),
     location:text(v?.location,'车源位置',120), detail:text(v?.detail,'车源描述',3000), checked:text(v?.checked,'车源确认状态',2000),
+    energy:text(v?.energy,'动力类型',50),type:text(v?.type,'车身类型',50),
     stock: Number.isInteger(v?.stock) && v.stock >= 0 ? v.stock : null
   }));
   const eligibleVehicles = vehicleMatches(customer, vehicles).map((v,index) => ({ ...v, sourceId:`V${index+1}` }));
@@ -54,7 +56,7 @@ export function normalizeRequest(body) {
   const knowledge = list(body.knowledge,30,'团队知识').map((k,index)=>({ id:`K${index+1}`, title:text(k?.title,'知识标题',200,true), body:text(k?.body,'知识内容',8000,true) }));
   const previousArtifact = body.previousArtifact ? {
     title: text(body.previousArtifact.title,'上一版标题',200,true),
-    sections: list(body.previousArtifact.sections,20,'上一版内容').map(s=>({label:text(s?.label,'段落标题',200,true),text:text(s?.text,'上一版段落',16000,true)}))
+    sections: list(body.previousArtifact.sections,20,'上一版内容').map(s=>({label:text(s?.label,'段落标题',200,true),text:text(s?.text,'上一版段落',20000,true)}))
   } : null;
   const request = {
     scope,kind:body.kind, prompt:text(body.prompt,'协作要求',8000,true), workspaceName:text(body.workspaceName,'团队名称',100) || 'Atlas Motors',
@@ -65,6 +67,7 @@ export function normalizeRequest(body) {
     cohort:list(body.cohort,50,'活动客群').map(c=>({id:text(c?.id,'客群 ID',100,true),language:text(c?.language,'客群语言',12,true),timezone:text(c?.timezone,'客群时区',80,true),channel:text(c?.channel,'客群渠道',40),need:text(c?.need,'客群需要',3000)})),
     campaign: body.campaign ? { title:text(body.campaign.title,'活动标题',200,true), audience:text(body.campaign.audience,'活动客群',1000), goal:text(body.campaign.goal,'活动目标',3000), channel:text(body.campaign.channel,'活动渠道',100) } : null
   };
+  if(body.kind==='comparison'){try{request.comparison=normalizeComparison(body.comparison,eligibleVehicles);}catch(error){throw new AppError('INVALID_COMPARISON',error.message);}request.needsPoster=false;}
   if (JSON.stringify(request).length > 90000) throw new AppError('CONTEXT_TOO_LARGE','资料过多，请减少本次任务引用的记忆或知识。',413);
   return request;
 }
@@ -95,6 +98,8 @@ Source IDs in the data identify evidence. Cite only supplied IDs in internal rev
 Return ONLY one JSON object with this exact shape:
 {"title":"a concise Chinese artifact title","sections":[{"label":"section label","text":"finished text with newlines","dir":"ltr or rtl","audience":"internal or customer"}]}
 Return 3–12 sections. At least one internal section is required. For kinds other than review and regional, include at least one customer section. Review and regional must contain only internal sections.
+For kind=comparison, prepare a customer-friendly vehicle comparison, in the requested customer language. comparison.vehicleIds selects the exact 2–3 variants. comparison.focus lists priorities in order. Return customer-audience sections labeled exactly "summary", "vehicle:<selected id>" for each selected vehicle, and "nextStep"; also an internal section labeled "review". Summary explains the comparison focus, each vehicle section explains fit and tradeoffs (up to 700 characters), nextStep suggests what to verify or test. The UI renders vehicle illustrations, source-backed specification rows and price bars. Do not invent scores, range, cargo dimensions, finance or operating costs; unknown specifications remain unverified. Price records may be sample data, not quotations. Price alone is not total ownership cost. Keep private customer memories and internal strategy out of customer sections. Do not describe illustrations as actual vehicle photos.
+When previousArtifact is provided, revise that exact baseline according to the prompt. Preserve all content, facts, section structure and language not affected by the requested edit. Poster revisions include the current poster text in previousArtifact; return revised posterBrief text while preserving unrequested poster fields.
 When needsPoster=true ALSO include a posterBrief object with these string fields: kicker (max 60 chars), headline (max 70), subheadline (max 140), details (max 140), cta (max 40), disclaimer (max 180). When needsPoster=false, produce only the requested text. Write poster fields in the customer's language. The brief is used to render a real visual poster. Do not invent dates, locations, discounts, stock or booking links: unconfirmed details must be described as proposed/to be confirmed. Make headlines concise and distinctive. Do not return HTML, executable code, Markdown fences, extra metadata or credentials.`;
 
 export function buildPrompt(request) {
@@ -120,9 +125,10 @@ export function parseArtifact(content, request, model) {
       const value=parsed.posterBrief[key];if(typeof value!=='string'||!value.trim()||value.length>max)throw invalid();posterBrief[key]=value.trim();
     }
   }
+  if(request.kind==='comparison'){for(const label of ['summary',...request.comparison.vehicleIds.map(id=>'vehicle:'+id),'nextStep'])if(sections.filter(s=>s.label===label&&s.audience==='customer').length!==1)throw invalid();}
   const sources = [...request.customer.memories.map(m=>`${m.id} · ${m.source}`), ...request.knowledge.map(k=>`${k.id} · ${k.title}`), ...request.vehicles.map(v=>`${v.sourceId} · ${v.name} / ${v.location}`)];
   return { id:`doc_${randomUUID()}`, scope:request.scope,customerId:request.customer.id, kind:request.kind, title:parsed.title.trim(), sections, status:'review',
-    createdAt:new Date().toISOString(), language:request.customer.language, sources, ...(posterBrief?{posterBrief}:{}), engine:'copilot', model:model || 'Copilot 默认模型',
+    createdAt:new Date().toISOString(), language:request.customer.language, sources, ...(request.kind==='comparison'?{format:'comparison',comparison:comparisonSnapshot(request)}:{}), ...(posterBrief?{posterBrief}:{}), engine:'copilot', model:model || 'Copilot 默认模型',
     note:'由 GitHub Copilot SDK 调用模型生成。客户资料与车源来自当前工作区，尚未外部核实；须人工审核后使用，未发送任何消息。' };
 }
 

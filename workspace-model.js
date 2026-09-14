@@ -3,12 +3,10 @@ import {markets, stages} from './data.js';
 import {openActions} from './task-flow.js';
 
 export const PRIMARY_NAV = [
-  {id:'home',label:'AI 协作',note:'Cowork',icon:'message',pages:['home','chat']},
-  {id:'desk',label:'工作台',icon:'grid',pages:['desk','work','workspace','inbox','deliverables','automations']},
-  {id:'customers',label:'客户与画像',icon:'users',pages:['customers']},
-  {id:'inventory',label:'车源与方案',icon:'car',pages:['inventory']},
-  {id:'campaigns',label:'营销活动',icon:'megaphone',pages:['campaigns']},
-  {id:'connections',label:'资料与连接',icon:'link',pages:['connections','knowledge']}
+  {id:'home',label:'今日工作',icon:'grid',pages:['home']},
+  {id:'desk',label:'工作台',icon:'doc',pages:['desk','chat','work','workspace','inbox','deliverables','customers','inventory','campaigns','regional']},
+  {id:'proactive',label:'AI 来信',icon:'mail',pages:['proactive','automations']},
+  {id:'ecosystem',label:'生态',icon:'link',pages:['ecosystem','connections','knowledge']}
 ];
 export const MARKET_DEFAULTS = {
   US:{currency:'USD',language:'en',timezone:'America/Chicago'},

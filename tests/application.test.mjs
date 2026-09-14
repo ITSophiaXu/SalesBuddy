@@ -1,3 +1,4 @@
+import {draftComparisonArtifact} from '../vehicle-comparison.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {draftArtifact} from '../domain.js';
@@ -24,7 +25,7 @@ globalThis.document = {
   querySelectorAll() { return []; },
   addEventListener(name, fn) { listeners[name] = fn; }
 };
-globalThis.window = { addEventListener(name, fn) { windowListeners[name] = fn; }, scrollTo() {} };
+globalThis.window = { history:{replaceState(_state,_title,hash){location.hash=hash;}}, addEventListener(name, fn) { windowListeners[name] = fn; }, scrollTo() {} };
 globalThis.location = { hash: '' };
 globalThis.localStorage = { getItem(key) { return storage.get(key) || null; }, setItem(key, value) { storage.set(key, value); } };
 globalThis.setTimeout = (fn, delay) => { timers.push({ fn, delay }); return timers.length; };
@@ -36,7 +37,7 @@ let failGeneration=false;
 let holdGeneration=null;
 const requests=[];
 const chatRequests=[];
-let holdChat=null,failChat=false;
+let holdChat=null,failChat=false,generatedResponse=null;
 let aiStatus={provider:'demo',ready:true,model:'Test fixture',message:'Test fixture'};
 globalThis.fetch=async(url,options={})=>{
   if(url==='/api/status')return Response.json(aiStatus);
@@ -50,7 +51,8 @@ globalThis.fetch=async(url,options={})=>{
   const r=JSON.parse(options.body);requests.push(r);
   if(holdGeneration)await holdGeneration;
   if(failGeneration)return Response.json({error:{code:'GENERATION_FAILED',message:'测试模型服务不可用'}},{status:502});
-  const artifact=r.scope==='store'?draftStoreArtifact(normalizeRequest(r)):draftArtifact(r.kind,r.customer,r.vehicles,r.prompt,r.knowledge,{preferredVehicleId:r.preferredVehicleId,campaign:r.campaign,workspaceName:r.workspaceName,workflow:r.workflow,businessContext:r.businessContext,needsPoster:r.needsPoster});
+  if(generatedResponse){const response=generatedResponse;generatedResponse=null;return Response.json({artifact:response});}
+  const artifact=r.kind==='comparison'?draftComparisonArtifact(normalizeRequest(r)):r.scope==='store'?draftStoreArtifact(normalizeRequest(r)):draftArtifact(r.kind,r.customer,r.vehicles,r.prompt,r.knowledge,{preferredVehicleId:r.preferredVehicleId,campaign:r.campaign,workspaceName:r.workspaceName,workflow:r.workflow,businessContext:r.businessContext,needsPoster:r.needsPoster});
   if(r.kind==='campaign')artifact.posterBrief={kicker:'FAMILY DRIVE',headline:'Room for what matters.',subheadline:'Find your next drive.',details:'Appointment details to be confirmed.',cta:'Request a test drive',disclaimer:'Concept. Confirm local details.'};
   return Response.json({artifact:{...artifact,engine:'demo'}});
 };
@@ -67,9 +69,9 @@ test('新工作区自动整理客户工作，可加载原页面及新的工作�
   assert.equal(currentState().tasks.length, 3);
   assert.equal(currentState().works.length, 8);
   assert.equal(currentState().artifacts.filter(a=>a.kind==='journey').length,8);
-  for (const page of ['home','chat','desk','connections','work','inbox','workspace','customers','inventory','campaigns','automations','deliverables','knowledge','settings']) {
+  for (const page of ['home','chat','desk','proactive','ecosystem','regional','connections','work','inbox','workspace','customers','inventory','campaigns','automations','deliverables','knowledge','settings']) {
     navigate(page);
-    assert.match(main(), /<main class="main">/);
+    assert.match(main(), /<main class="main(?: [^"]*)?">/);
     assert.doesNotMatch(main(), />NaN</);
     assert.ok(main().length > 3500, `${page} renders content`);
   }
@@ -168,7 +170,7 @@ test('活动包同时保存关联的文案与海报，海报编辑后重新审�
   assert.equal(currentState().conversations[0].customerId,'store:'+campaign.market);
   await click('campaign-package',{id:campaign.id});assert.equal(currentState().conversations.length,count);
   element('#cowork-chat-input').value=currentState().conversations[0].draft;
-  await submit('cowork-chat-form',{});navigate('chat');
+  await submit('cowork-chat-form',{});navigate(location.hash.slice(1));
   const s=currentState(),task=s.tasks[0],poster=s.artifacts.find(a=>a.id===task.posterId);
   assert.equal(poster.parentArtifactId,task.artifactId);assert.equal(poster.campaignId,campaign.id);
   assert.equal(poster.poster.headline,'Room for what matters.');assert.match(main(),/class="chat-artifact/);
@@ -239,8 +241,8 @@ test('从快速咨询入口进入完整交接工作，城市与预算不被补�
   navigate('work');assert.match(main(),/补齐需求/);
 });
 
-const sayChat=async text=>{element('#cowork-chat-input').value=text;await submit('cowork-chat-form',{});navigate('chat');};
-test('v1.6 对话保留 Markdown 和真实事件，不因普通流式回复创建任务',async t=>{
+const sayChat=async text=>{element('#cowork-chat-input').value=text;await submit('cowork-chat-form',{});navigate(location.hash.slice(1));};
+test('首页对话保留 Markdown 和真实事件，不因普通流式回复创建任务',async t=>{
   const original=globalThis.fetch;t.after(()=>{globalThis.fetch=original;});
   globalThis.fetch=async(url,options)=>{
     if(url!=='/api/chat')return original(url,options);
@@ -267,7 +269,7 @@ const latestChat=()=>currentState().conversations[0];
 
 test('对话整理画像，经销售核对保存，后续车源方案实际使用更新内容',async()=>{
   await click('chat-profile',{customer:'c1'});navigate('chat');
-  assert.equal(latestChat().customerId,'c1');assert.match(main(),/把刚才的沟通告诉我/);
+  assert.equal(latestChat().customerId,'c1');assert.match(main(),/记录客户沟通，持续完善画像/);
   const before=currentState(),cBefore=before.customers.find(c=>c.id==='c1');
   await sayChat('沟通记录：需要更大的后排空间。太太希望一起试驾后决定。计划月底购车。');
   const chat=latestChat(),m=chat.messages.at(-1);assert.equal(m.mode,'profile');assert.equal(m.profileProposal.status,'pending');
@@ -296,8 +298,8 @@ test('画像草稿暂不记录不会改变客户，未选客户不会默认写�
   await click('profile-discard',{chat:chat.id,message:m.id});assert.equal(latestChat().messages.at(-1).profileProposal.status,'discarded');assert.equal(JSON.stringify(currentState().customers),before);
 });
 
-test('首页首屏与全局导航都有对话入口，普通问答连续保存而不产生交付物',async()=>{
-  navigate('home');assert.match(main(),/id="cowork-home-input"/);assert.doesNotMatch(main(),/class="cw-objectives"/);assert.match(main(),/aria-label="主导航"/);
+test('个人智能首页有明显对话入口，普通问答连续保存而不产生交付物',async()=>{
+  navigate('home');assert.match(main(),/data-act="chat-new"/);assert.doesNotMatch(main(),/class="cw-objectives"/);assert.match(main(),/aria-label="主导航"/);
   await click('chat-new');navigate('chat');
   const before=currentState();await sayChat('你好');await sayChat('为什么客户试驾后不回复？');
   assert.equal(latestChat().messages.length,4);assert.equal(latestChat().customerId,'');
@@ -314,12 +316,15 @@ test('在自然对话中提到唯一客户可带入上下文，讨论海报不�
 test('明确要求成果时在聊天内生成文案和海报，可继续改语言并保留上一版',async()=>{
   const before=currentState().artifacts.length;await sayChat('帮 Sarah 做一张周末体验邀请海报');
   const first=latestChat().messages.at(-1);assert.ok(first.artifactId);assert.ok(first.posterId);
-  assert.equal(currentState().artifacts.length,before+2);assert.match(main(),/class="chat-artifact/);assert.equal(location.hash,'#chat');
+  assert.equal(currentState().artifacts.length,before+2);assert.match(main(),/class="chat-artifact/);assert.equal(location.hash,'#chat?conversation='+latestChat().id);
+  await click('chat-artifact',{id:first.posterId});
   await sayChat('换成阿拉伯语，短一点');
   const next=latestChat().messages.at(-1);assert.notEqual(next.artifactId,first.artifactId);
   assert.equal(requests.at(-1).customer.language,'ar');assert.ok(requests.at(-1).previousArtifact);
   assert.ok(currentState().artifacts.some(a=>a.id===first.artifactId));
-  assert.equal(currentState().artifacts.find(a=>a.id===next.posterId).language,'ar');
+  const revised=currentState().artifacts.find(a=>a.id===next.artifactId);
+  assert.equal(revised.language,'ar');assert.equal(revised.format,'poster');assert.equal(revised.parentArtifactId,first.posterId);
+  assert.equal(currentState().artifacts.length,before+3);assert.equal(next.posterId,undefined);
 });
 test('生成后继续问原因只回答，之后缩短解释也不会误改成果',async()=>{
   const before=currentState().artifacts.length;await sayChat('为什么海报要这样设计？');await sayChat('短一点');
@@ -381,6 +386,7 @@ test('对话提到另一位明确客户时开启独立上下文，不混合原�
 });
 test('讨论修订时原海报被人工编辑，不覆盖员工刚改好的版本',async()=>{
   await sayChat('帮 Marcus 做一张海报');const first=latestChat().messages.at(-1);
+  await click('chat-artifact',{id:first.posterId});
   let release;holdChat=new Promise(resolve=>{release=resolve;});
   const operation=sayChat('把海报标题改短一点');await new Promise(resolve=>setImmediate(resolve));
   await click('artifact',{id:first.posterId});const p=currentState().artifacts.find(a=>a.id===first.posterId);
@@ -407,7 +413,7 @@ test('新建门店任务可选择市场，同一对话保留目标、成果和�
   await sayChat('为门店制定家庭 SUV 营销方案，只要文字不要海报');
   const chat=latestChat(),m=chat.messages.at(-1);assert.ok(m.artifactId);assert.equal(chat.customerId,'store:US');
   assert.equal(requests.at(-1).scope,'store');assert.equal(currentState().artifacts.find(a=>a.id===m.artifactId).customerId,'store:US');
-  await click('chat-details');assert.match(main(),/本次成果/);assert.match(main(),/管理资料与连接/);
+  await click('chat-details');assert.match(main(),/aria-label="查看成果版本"/);assert.match(main(),/配置数据来源/);
   await click('chat-complete');assert.ok(latestChat().completedAt);await click('chat-complete');assert.equal(latestChat().completedAt,undefined);
   navigate('desk');assert.match(main(),/家庭 SUV 营销方案/);
 });
@@ -465,7 +471,193 @@ test('资料选择真实影响对话和成果请求，任务、搜索和成果�
 test('旧成果准备记录进入 Cowork，反复打开不会创建重复任务',async()=>{
   const old=currentState().tasks.find(t=>!t.conversationId&&!t.workId),before=currentState().conversations.length;
   assert.ok(old);await click('select-task',{id:old.id});navigate(location.hash.slice(1));
-  assert.equal(currentState().conversations.length,before+1);assert.match(main(),/Cowork/);assert.match(main(),/AI 协作/);
+  assert.equal(currentState().conversations.length,before+1);assert.match(main(),/Cowork/);assert.match(main(),/今日工作/);
   const linked=currentState().tasks.find(t=>t.id===old.id).conversationId;assert.ok(linked);
   await click('select-task',{id:old.id});assert.equal(currentState().conversations.length,before+1);assert.equal(location.hash,'#chat?conversation='+linked);
+});
+
+test('角色切换持久保存：首页、专业工作流及市场范围随之改变',async()=>{
+  navigate('home');listeners.change({target:{dataset:{change:'persona'},value:'marketing'}});
+  assert.equal(currentState().persona,'marketing');assert.match(main(),/策划营销活动/);assert.doesNotMatch(main(),/data-id="reactivation"/);
+  listeners.change({target:{dataset:{change:'market'},value:'AE'}});
+  await click('xp-workflow',{id:'campaign'});assert.match(modal(),/store:AE" selected/);
+  await submit('xp-workflow-form',{subject:'store:AE',goal:'面向家庭，先核实试驾日期'},{id:'campaign'});navigate(location.hash.slice(1));
+  let chat=latestChat();assert.equal(chat.persona,'marketing');assert.equal(chat.customerId,'store:AE');assert.equal(chat.workflowSteps.length,4);assert.match(chat.draft,/先核实试驾日期/);
+  assert.ok(main().indexOf('aria-label="成果工作台"')<main().indexOf('aria-label="Cowork 对话"'));
+  await sayChat(chat.draft);chat=latestChat();assert.ok(chat.messages.at(-1).artifactId);assert.ok(chat.messages.at(-1).posterId);
+  const last=requests.at(-1);assert.equal(last.customer.market,'AE');assert.equal(last.scope,'store');
+  listeners.change({target:{dataset:{change:'persona'},value:'regional'}});navigate('home');assert.match(main(),/经营诊断/);assert.doesNotMatch(main(),/data-id="campaign"/);
+  await click('xp-workflow',{id:'regional-review',market:'US'});await submit('xp-workflow-form',{subject:'store:US',goal:'关注未结服务问题'},{id:'regional-review'});navigate(location.hash.slice(1));await sayChat(latestChat().draft);
+  assert.equal(latestChat().persona,'regional');assert.ok(latestChat().messages.at(-1).artifactId);assert.equal(requests.at(-1).customer.market,'US');
+  listeners.change({target:{dataset:{change:'persona'},value:'sales'}});listeners.change({target:{dataset:{change:'market'},value:'all'}});
+});
+
+test('中央工作台可切换海报和文档、编辑正文，原对话及客户事实不丢失',async()=>{
+  const chat=currentState().conversations.find(c=>c.workflowId==='campaign'),m=chat.messages.at(-1);
+  await click('chat-select',{id:chat.id});navigate(location.hash.slice(1));
+  await click('chat-artifact',{id:m.posterId});assert.match(main(),/class="xp-poster-canvas"/);
+  await click('chat-artifact',{id:m.artifactId});assert.match(main(),/class="artifact-paper xp-document"/);
+  const a=currentState().artifacts.find(a=>a.id===m.artifactId),customers=JSON.stringify(currentState().customers);
+  await click('chat-canvas-edit',{id:a.id});assert.match(main(),/id="chat-canvas-form"/);
+  const data={title:'家庭试驾活动 · 审阅版',...Object.fromEntries(a.sections.map((s,n)=>['section-'+n,n===0?'已核对的活动目标':s.text]))};
+  await submit('chat-canvas-form',data,{id:a.id});
+  const selected=currentState().conversations.find(c=>c.id===chat.id).selectedArtifactId;
+  const next=currentState().artifacts.find(a=>a.id===selected);assert.notEqual(next.id,m.artifactId);assert.equal(next.parentArtifactId,m.artifactId);
+  assert.deepEqual(currentState().artifacts.find(x=>x.id===a.id),a);assert.equal(next.title,data.title);assert.equal(next.sections[0].text,'已核对的活动目标');assert.equal(next.status,'review');assert.equal(JSON.stringify(currentState().customers),customers);
+  assert.equal(currentState().conversations.find(c=>c.id===chat.id).messages.length,chat.messages.length);
+  await click('chat-canvas-edit',{id:a.id});await click('chat-canvas-cancel',{id:a.id});assert.doesNotMatch(main(),/id="chat-canvas-form"/);
+});
+
+test('AI 简报成为可阅读、归档并返回工作台的来信',async()=>{
+  navigate('proactive');const before=currentState().deliveries.length;
+  await click('xp-brief');navigate('proactive');const d=currentState().deliveries[0];assert.equal(currentState().deliveries.length,before+1);assert.equal(d.kind,'brief');assert.equal(d.role,'sales');assert.match(main(),/工作区规则整理/);
+  await click('xp-mail-state',{id:d.id,mode:'unread'});assert.equal(currentState().deliveries.find(x=>x.id===d.id).read,false);
+  await click('xp-mail-state',{id:d.id,mode:'archive'});assert.equal(currentState().deliveries.find(x=>x.id===d.id).archived,true);
+  await click('xp-mail-filter',{id:'archive'});await click('xp-delivery',{id:d.id});assert.match(main(),/移回收件箱/);
+  await click('xp-delivery-work',{id:d.id});assert.match(modal(),/xp-workflow-form/);await click('close-modal');
+});
+
+test('生态 Skill 的门店要求用于新任务，停用后阻止创建，MCP 配置保持未连接',async()=>{
+  navigate('ecosystem');await click('xp-ecosystem-tab',{id:'skills'});await click('xp-skill',{id:'conversion'});
+  await submit('xp-skill-form',{enabled:'on',instruction:'列出价格核实负责人'},{id:'conversion'});
+  await click('xp-workflow',{id:'conversion'});await submit('xp-workflow-form',{subject:'c1',goal:''},{id:'conversion'});assert.match(latestChat().draft,/列出价格核实负责人/);assert.equal(latestChat().skillSnapshot,'列出价格核实负责人');
+  const count=currentState().conversations.length;await submit('xp-skill-form',{instruction:'列出价格核实负责人'},{id:'conversion'});await click('xp-workflow',{id:'conversion'});assert.equal(currentState().conversations.length,count);assert.match(element('#toast-root').innerHTML,/已停用/);
+  await submit('xp-skill-form',{enabled:'on',instruction:''},{id:'conversion'});
+  navigate('ecosystem');await click('xp-ecosystem-tab',{id:'mcp'});await click('xp-mcp');await submit('xp-mcp-form',{name:'门店数据',endpoint:'https://dealer.example/mcp',scope:'只读客户和车辆'});
+  assert.equal(currentState().ecosystem.mcp.at(-1).status,'configured');assert.match(main(),/已配置 · 未连接/);
+});
+
+test('首页只有一个完整对话区，普通问答保持首页，返回时恢复同一段对话',async()=>{
+  await click('chat-new');assert.match(location.hash,/^#home\?conversation=/);navigate(location.hash.slice(1));
+  const before=currentState(),id=latestChat().id;
+  assert.match(main(),/xp-home-conversation/);assert.match(main(),/需要你推进/);
+  assert.equal((main().match(/aria-label="Cowork 对话"/g)||[]).length,1);
+  assert.equal((main().match(/id="cowork-chat-input"/g)||[]).length,1);
+  assert.doesNotMatch(main(),/aria-label="成果工作台"|xp-reactive-layout|对话工作区/);
+  await sayChat('你好');await sayChat('为什么客户试驾后不回复？');
+  assert.equal(latestChat().id,id);assert.equal(latestChat().messages.length,4);assert.match(location.hash,/^#home\?conversation=/);
+  assert.equal(currentState().artifacts.length,before.artifacts.length);assert.equal(currentState().tasks.length,before.tasks.length);
+  listeners.input({target:{id:'cowork-chat-input',dataset:{},value:'我还想问一个问题'}});
+  navigate('desk');navigate('home');assert.match(main(),/我还想问一个问题/);assert.match(main(),/为什么客户试驾后不回复/);
+  assert.equal(currentState().homeConversationId,id);
+  navigate('chat?conversation='+id);assert.match(main(),/xp-home-conversation/);assert.doesNotMatch(main(),/xp-reactive-layout/);
+});
+
+test('首页对话形成具体方案后，在同一会话打开成果工作台，返回首页不重复显示该任务',async()=>{
+  await click('chat-new');navigate(location.hash.slice(1));const id=latestChat().id;
+  await sayChat('帮 Sarah 写一句简短的英文跟进话术');assert.equal(latestChat().tracked,undefined);assert.match(main(),/xp-home-conversation/);
+  const count=currentState().conversations.length;
+  await sayChat('为 Sarah 制定一份客户转化方案，包含关键顾虑、沟通内容和下一步安排。');
+  assert.equal(currentState().conversations.length,count);assert.equal(latestChat().id,id);assert.ok(latestChat().messages.at(-1).artifactId);assert.equal(latestChat().tracked,true);
+  assert.match(location.hash,new RegExp('^#chat\\?conversation='+id+'$'));navigate(location.hash.slice(1));
+  assert.match(main(),/aria-label="成果工作台"/);assert.equal((main().match(/aria-label="Cowork 对话"/g)||[]).length,1);
+  assert.doesNotMatch(main(),/xp-home-conversation|对话工作区/);assert.match(main(),/帮 Sarah 写一句/);
+  await click('chat-home');navigate(location.hash.slice(1));assert.match(main(),/xp-home-conversation/);assert.doesNotMatch(main(),/aria-label="成果工作台"/);
+  assert.notEqual(currentState().homeConversationId,id);
+  await click('chat-select',{id});navigate(location.hash.slice(1));assert.match(main(),/xp-reactive-layout/);assert.equal(currentState().conversations.find(c=>c.id===id).messages.length,4);
+});
+
+test('客户画像记录也在首页单一对话区完成，不创建空成果画布',async()=>{
+  await click('chat-profile',{customer:'c1'});navigate(location.hash.slice(1));
+  assert.match(location.hash,/^#home\?conversation=/);assert.match(main(),/记录客户沟通，持续完善画像/);
+  assert.doesNotMatch(main(),/aria-label="成果工作台"/);assert.equal((main().match(/id="cowork-chat-form"/g)||[]).length,1);
+  const count=currentState().artifacts.length;await sayChat('沟通记录：Sarah 说准备下个月买车，想先确认儿童座椅能否放下。');
+  assert.equal(latestChat().messages.at(-1).mode,'profile');assert.equal(currentState().artifacts.length,count);assert.match(main(),/xp-home-conversation/);
+});
+
+test('选中的历史文档才是修订基线，返回内容进入新版本，配套海报和手动版本保留',async()=>{
+  await click('chat-new');await sayChat('为 Sarah 制定一份活动方案，包含海报');
+  const first=latestChat().messages.at(-1),doc=currentState().artifacts.find(a=>a.id===first.artifactId),poster=currentState().artifacts.find(a=>a.id===first.posterId);
+  await click('chat-artifact',{id:doc.id});await click('chat-canvas-edit',{id:doc.id});
+  await submit('chat-canvas-form',{title:'手动修订版本',...Object.fromEntries(doc.sections.map((s,n)=>['section-'+n,n===0?'手动核实的计划':s.text]))},{id:doc.id});
+  const manual=currentState().artifacts.find(a=>a.id===latestChat().selectedArtifactId);assert.equal(manual.artifactVersion,2);
+  await click('chat-canvas-approve',{id:manual.id});
+  listeners.change({target:{dataset:{canvasVersion:'true'},value:doc.id}});
+  assert.match(main(),/历史版本/);assert.match(main(),new RegExp('data-artifact-id="'+doc.id+'"'));
+  assert.doesNotMatch(main(),/xp-canvas-task/);assert.match(main(),/wb-task-details/);
+  const returnedText='先确认可接受月供，再核实家庭成员的试驾时间。';
+  generatedResponse={...doc,title:'明确下一步的方案',sections:doc.sections.map((s,n)=>({...s,text:n===0?returnedText:s.text})),engine:'copilot'};
+  const before=currentState().artifacts.length;await sayChat('请修改当前文档，把下一步写具体');
+  const response=latestChat().messages.at(-1),next=currentState().artifacts.find(a=>a.id===response.artifactId);
+  assert.equal(chatRequests.at(-1).latestArtifact.selection.id,doc.id);assert.equal(chatRequests.at(-1).latestArtifact.selection.version,1);
+  assert.deepEqual(requests.at(-1).previousArtifact.sections,doc.sections);assert.equal(requests.at(-1).needsPoster,false);
+  assert.equal(next.sections[0].text,returnedText);assert.equal(next.parentArtifactId,doc.id);assert.equal(next.artifactVersion,3);assert.equal(next.status,'review');assert.equal(next.approvedAt,undefined);
+  assert.equal(currentState().artifacts.length,before+1);assert.equal(latestChat().selectedArtifactId,next.id);
+  assert.deepEqual(currentState().artifacts.find(a=>a.id===doc.id),doc);assert.deepEqual(currentState().artifacts.find(a=>a.id===poster.id),poster);
+  assert.equal(currentState().artifacts.find(a=>a.id===manual.id).status,'approved');assert.match(main(),new RegExp(returnedText));
+  await click('artifact',{id:manual.id});assert.match(modal(),/回到原对话/);await click('close-modal');
+});
+
+test('海报在中间实时编辑，未保存时阻止模型使用旧稿，保存后对话只更新海报',async()=>{
+  const first=latestChat().messages.find(m=>m.posterId),original=currentState().artifacts.find(a=>a.id===first.posterId),document=currentState().artifacts.find(a=>a.id===first.artifactId);
+  await click('chat-artifact',{id:original.id});await click('chat-canvas-edit',{id:original.id});
+  assert.equal(modal(),'');assert.match(main(),/wb-poster-controls/);assert.match(main(),/id="canvas-poster-preview"/);
+  listeners.input({target:{dataset:{id:original.id,canvasPoster:'headline'},value:'A family visit, at your pace.'}});
+  listeners.change({target:{dataset:{id:original.id,canvasPoster:'theme'},value:'midnight'}});
+  listeners.change({target:{dataset:{id:original.id,canvasPoster:'size'},value:'story'}});
+  assert.match(element('#canvas-poster-preview').innerHTML,/A family visit/);
+  const requestsBefore=chatRequests.length;await sayChat('修改当前海报标题');
+  assert.equal(chatRequests.length,requestsBefore);assert.match(element('#toast-root').innerHTML,/未保存/);
+  assert.equal(currentState().artifactDrafts[original.id].poster.theme,'midnight');
+  navigate('desk');await click('chat-select',{id:latestChat().id});navigate(location.hash.slice(1));assert.match(main(),/A family visit, at your pace/);
+  await submit('chat-canvas-form',{title:'家庭到店活动海报'},{id:original.id});
+  const manual=currentState().artifacts.find(a=>a.id===latestChat().selectedArtifactId);
+  assert.equal(manual.poster.theme,'midnight');assert.equal(manual.poster.size,'story');assert.equal(manual.artifactVersion,2);assert.equal(currentState().artifactDrafts[original.id],undefined);
+  const returnedBrief={kicker:'FAMILY VISIT',headline:'Bring your questions.',subheadline:'Explore the car together.',details:'Confirm your visit time with the team.',cta:'Ask about a visit',disclaimer:'Details subject to local confirmation.'};
+  generatedResponse={...document,language:'en',title:'家庭到店海报新稿',posterBrief:returnedBrief,engine:'copilot'};
+  const before=currentState().artifacts.length;await sayChat('请精简当前海报的文案，保留活动信息');
+  const next=currentState().artifacts.find(a=>a.id===latestChat().messages.at(-1).artifactId);
+  assert.equal(chatRequests.at(-1).latestArtifact.selection.id,manual.id);assert.equal(chatRequests.at(-1).latestArtifact.selection.format,'poster');
+  assert.equal(chatRequests.at(-1).latestArtifact.poster.headline,manual.poster.headline);assert.equal(requests.at(-1).needsPoster,true);
+  assert.equal(next.format,'poster');assert.equal(next.poster.headline,returnedBrief.headline);assert.equal(next.poster.theme,'midnight');assert.equal(next.poster.size,'story');assert.equal(next.poster.brand,manual.poster.brand);assert.equal(next.poster.vehicle,manual.poster.vehicle);
+  assert.equal(next.parentArtifactId,manual.id);assert.equal(next.artifactVersion,3);assert.equal(currentState().artifacts.length,before+1);assert.equal(latestChat().messages.at(-1).posterId,undefined);
+  assert.deepEqual(currentState().artifacts.find(a=>a.id===document.id),document);assert.deepEqual(currentState().artifacts.find(a=>a.id===original.id),original);
+});
+
+test('生成期间切换查看另一成果，迟到结果仍属于提交时的版本且不抢走当前画布',async()=>{
+  const first=latestChat().messages.find(m=>m.posterId),doc=currentState().artifacts.find(a=>a.id===first.artifactId);
+  await click('chat-artifact',{id:doc.id});let release;holdGeneration=new Promise(resolve=>{release=resolve;});
+  const operation=sayChat('请修改当前文档，补充具体动作');await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(latestChat().messages.at(-1).status,'creating');
+  await click('chat-artifact',{id:first.posterId});release();await operation;holdGeneration=null;
+  const revised=currentState().artifacts.find(a=>a.id===latestChat().messages.at(-1).artifactId);
+  assert.equal(revised.parentArtifactId,doc.id);assert.equal(latestChat().selectedArtifactId,first.posterId);
+  assert.match(main(),new RegExp('data-artifact-id="'+first.posterId+'"'));
+});
+
+test('模型生成期间原海报被其他编辑入口修改，旧基线的迟到结果不保存',async()=>{
+  const first=latestChat().messages.find(m=>m.posterId);await click('chat-artifact',{id:first.posterId});
+  let release;holdGeneration=new Promise(resolve=>{release=resolve;});const operation=sayChat('请精简当前海报文案');await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(latestChat().messages.at(-1).status,'creating');
+  const original=currentState().artifacts.find(a=>a.id===first.posterId);await click('artifact',{id:original.id});
+  element('#poster-form').values={...original.poster,headline:'Verified during generation'};await click('poster-save');await click('close-modal');
+  const before=currentState().artifacts.length;release();await operation;holdGeneration=null;
+  assert.equal(latestChat().messages.at(-1).status,'stale');assert.equal(currentState().artifacts.length,before);
+  assert.equal(currentState().artifacts.find(a=>a.id===original.id).poster.headline,'Verified during generation');
+});
+
+test('成果选择仅限当前任务，讨论问题不会创建或改写任何成果',async()=>{
+  const selected=latestChat().selectedArtifactId,old=currentState().conversations.find(c=>c.id!==latestChat().id&&c.messages.some(m=>m.artifactId));
+  const foreign=old.messages.find(m=>m.artifactId).artifactId;
+  await click('chat-artifact',{id:foreign});assert.equal(latestChat().selectedArtifactId,selected);
+  const before=JSON.stringify(currentState().artifacts);await sayChat('为什么当前海报要这样写？');await sayChat('短一点');
+  assert.equal(latestChat().messages.at(-1).mode,'reply');assert.equal(JSON.stringify(currentState().artifacts),before);
+});
+
+test('销售通过对话生成图文车型对比，并在右侧改变比较重点，原版和客户记录保留',async()=>{
+  await click('chat-new');navigate('home');assert.match(main(),/制作车型对比/);
+  const customers=JSON.stringify(currentState().customers);
+  await sayChat('为 Sarah 比较 Tesla Model Y 和 Toyota RAV4 Hybrid，侧重家庭空间、购车预算和补能便利，生成中文车型对比方案');
+  const first=latestChat().messages.at(-1),original=currentState().artifacts.find(a=>a.id===first.artifactId);
+  assert.ok(original);assert.equal(original.format,'comparison');assert.equal(latestChat().tracked,true);assert.equal(latestChat().customerId,'c1');
+  assert.deepEqual(original.comparison.vehicleIds,['v1','v2']);assert.deepEqual(original.comparison.focus,['space','budget','charging']);assert.match(main(),/comparison-sheet/);assert.match(main(),/车型示意/);assert.match(main(),/49,990/);assert.match(main(),/37,950/);
+  assert.ok(main().indexOf('comparison-sheet')<main().indexOf('aria-label="Cowork 对话"'));assert.match(main(),/导出客户对比页/);
+  await sayChat('请调整当前车型对比，把用车成本放在最前面，其它重点保留');
+  const next=currentState().artifacts.find(a=>a.id===latestChat().messages.at(-1).artifactId);
+  assert.equal(next.parentArtifactId,original.id);assert.equal(next.format,'comparison');assert.deepEqual(next.comparison.focus,['cost','space','budget','charging']);
+  assert.equal(chatRequests.at(-1).latestArtifact.selection.format,'comparison');assert.equal(chatRequests.at(-1).latestArtifact.selection.id,original.id);
+  assert.deepEqual(currentState().artifacts.find(a=>a.id===original.id),original);assert.equal(JSON.stringify(currentState().customers),customers);
+  await click('chat-canvas-edit',{id:next.id});assert.match(main(),/对比摘要/);
+  await submit('chat-canvas-form',{title:next.title,...Object.fromEntries(next.sections.map((s,n)=>['section-'+n,s.label==='summary'?'本次先核实家庭补能条件，再比较日常使用成本。':s.text]))},{id:next.id});
+  assert.match(main(),/本次先核实家庭补能条件/);assert.match(main(),/comparison-sheet/);assert.equal(currentState().artifacts.find(a=>a.id===latestChat().selectedArtifactId).artifactVersion,3);
 });

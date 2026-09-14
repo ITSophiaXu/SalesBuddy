@@ -1,3 +1,4 @@
+import {draftComparisonArtifact} from '../vehicle-comparison.js';
 import http from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {randomUUID,createHash} from 'node:crypto';
@@ -12,7 +13,7 @@ const {version}=JSON.parse(await readFile(new URL('package.json',root),'utf8'));
 const files = new Map([
   ['/markdown.js','markdown.js'],['/execution.js','execution.js'],['/node_modules/marked/lib/marked.esm.js','node_modules/marked/lib/marked.esm.js'],
   ['/','index.html'],['/index.html','index.html'],['/styles.css','styles.css'],['/app.js','app.js'],
-  ['/domain.js','domain.js'],['/data.js','data.js'],['/ai-client.js','ai-client.js'],['/poster.js','poster.js'],['/cowork.js','cowork.js'],['/cowork-ui.js','cowork-ui.js'],['/cowork.css','cowork.css'],['/chat-ui.js','chat-ui.js'],['/chat.css','chat.css'],['/ux.css','ux.css'],['/workspace-model.js','workspace-model.js'],['/workspace-ui.js','workspace-ui.js'],['/task-flow.js','task-flow.js'],['/task-ui.js','task-ui.js'],['/customer-profile.js','customer-profile.js'],['/profile-ui.js','profile-ui.js'],['/assets/favicon.svg','assets/favicon.svg']
+  ['/domain.js','domain.js'],['/data.js','data.js'],['/ai-client.js','ai-client.js'],['/poster.js','poster.js'],['/cowork.js','cowork.js'],['/cowork-ui.js','cowork-ui.js'],['/cowork.css','cowork.css'],['/chat-ui.js','chat-ui.js'],['/artifact-workbench.js','artifact-workbench.js'],['/workbench-ui.js','workbench-ui.js'],['/vehicle-comparison.js','vehicle-comparison.js'],['/chat.css','chat.css'],['/ux.css','ux.css'],['/workspace-model.js','workspace-model.js'],['/workspace-ui.js','workspace-ui.js'],['/task-flow.js','task-flow.js'],['/task-ui.js','task-ui.js'],['/customer-profile.js','customer-profile.js'],['/profile-ui.js','profile-ui.js'],['/experience-model.js','experience-model.js'],['/experience-ui.js','experience-ui.js'],['/experience.css','experience.css'],['/assets/favicon.svg','assets/favicon.svg']
 ]);
 const mime = {html:'text/html; charset=utf-8',css:'text/css; charset=utf-8',js:'text/javascript; charset=utf-8',svg:'image/svg+xml'};
 function number(value,fallback,min,max) {const n=value==null||value===''?fallback:Number(value);if(!Number.isInteger(n)||n<min||n>max)throw new Error('Invalid numeric server configuration');return n;}
@@ -89,7 +90,7 @@ export function createApplication({config,generator}) {
             return;
           }
           let artifact;
-          if(config.provider==='demo')artifact={...(request.scope==='store'?draftStoreArtifact(request):draftArtifact(request.kind,request.customer,request.vehicles,request.prompt,request.knowledge,{preferredVehicleId:request.preferredVehicleId,campaign:request.campaign,workspaceName:request.workspaceName,workflow:request.workflow,businessContext:request.businessContext,cohort:request.cohort,needsPoster:request.needsPoster})),engine:'demo',model:'本地场景模板'};
+          if(config.provider==='demo')artifact={...(request.kind==='comparison'?draftComparisonArtifact(request):request.scope==='store'?draftStoreArtifact(request):draftArtifact(request.kind,request.customer,request.vehicles,request.prompt,request.knowledge,{preferredVehicleId:request.preferredVehicleId,campaign:request.campaign,workspaceName:request.workspaceName,workflow:request.workflow,businessContext:request.businessContext,cohort:request.cohort,needsPoster:request.needsPoster})),engine:'demo',model:'本地场景模板'};
           else artifact=await generator.generate(request,options);
           if(!res.destroyed){if(stream)stream.result({artifact,requestId});else json(res,200,{artifact,requestId});}
         }catch(error){

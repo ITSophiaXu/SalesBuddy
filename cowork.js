@@ -297,7 +297,7 @@ export function campaignAudience(state,campaign,now=new Date()) {
 }
 
 export function businessContext(state,kind,customer,now=new Date()) {
-  const customers=kind==='regional'?state.customers:state.customers.filter(c=>c.market===customer.market);
+  const customers=kind==='regional'&&customer.scope!=='store'?state.customers:state.customers.filter(c=>c.market===customer.market);
   const ids=new Set(customers.map(c=>c.id));
   const works=state.works.filter(w=>ids.has(w.customerId));
   const byStore=[...new Set(customers.map(c=>`${c.market} · ${c.city}`))].map(store=>{

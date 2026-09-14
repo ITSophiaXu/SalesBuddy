@@ -12,12 +12,12 @@ function state(){const s=initializeCowork(seedState());initializeWorkspace(s);re
 const customerContext=s=>({kind:'followup',prompt:'测试',customer:s.customers[0],vehicles:s.vehicles,knowledge:s.knowledge,workspaceName:s.settings.name});
 const storeContext=(s,market='US')=>({scope:'store',...customerContext(s),customer:storeSubject(s,market)});
 
-test('AI 协作统一 Cowork 对话，客户画像和两类业务工作台均可直接进入',()=>{
-  assert.deepEqual(PRIMARY_NAV.map(n=>n.label),['AI 协作','工作台','客户与画像','车源与方案','营销活动','资料与连接']);
+test('四个核心入口保留专业工作台，定时规则归入主动工作',()=>{
+  assert.deepEqual(PRIMARY_NAV.map(n=>n.label),['今日工作','工作台','AI 来信','生态']);
   const routes=PRIMARY_NAV.flatMap(n=>n.pages);assert.equal(new Set(routes).size,routes.length);
-  assert.ok(PRIMARY_NAV.find(n=>n.id==='desk').pages.includes('automations'));
-  assert.ok(PRIMARY_NAV.find(n=>n.id==='inventory').pages.includes('inventory'));
-  assert.ok(PRIMARY_NAV.find(n=>n.id==='campaigns').pages.includes('campaigns'));
+  assert.ok(PRIMARY_NAV.find(n=>n.id==='proactive').pages.includes('automations'));
+  assert.ok(PRIMARY_NAV.find(n=>n.id==='desk').pages.includes('inventory'));
+  assert.ok(PRIMARY_NAV.find(n=>n.id==='desk').pages.includes('campaigns'));
 });
 test('简短话术与问答不产生任务，单张海报是素材，经营方案才是任务',()=>{
   const context=customerContext(state());

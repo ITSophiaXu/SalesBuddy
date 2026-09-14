@@ -134,3 +134,16 @@ test('浏览器无效 UTF-8 流使用安全错误，调用方取消仍然保留 
   globalThis.fetch=async(_url,options)=>{options.signal.throwIfAborted();};
   await assert.rejects(sendChatMessage({message:'hi'},{signal:controller.signal}),{name:'AbortError'});
 });
+
+test('选中成果协议保留确切版本，并限制修订只生成所选格式',()=>{
+  const latestArtifact={kind:'campaign',title:'活动文档',language:'en',needsPoster:true,sections:[{label:'正文',text:'Baseline'}],selection:{id:'chosen-doc',version:2,format:'document'}};
+  const request=normalizeChatRequest({message:'修改当前文档',context:context(),latestArtifact});
+  assert.deepEqual(request.latestArtifact.selection,latestArtifact.selection);assert.equal(request.latestArtifact.needsPoster,false);
+  const result=parseChatReply(JSON.stringify({mode:'artifact',reply:'正在修改',artifactRequest:{...artifactRequest,kind:'followup',revision:true,needsPoster:true}}),request);
+  assert.equal(result.artifactRequest.needsPoster,false);assert.equal(result.artifactRequest.kind,'campaign');
+  for(const selection of [{id:'x',version:0,format:'document'},{id:'x',version:1,format:'executable'},{id:'x',version:1,format:'poster'}])assert.throws(()=>normalizeChatRequest({message:'修改当前文档',context:context(),latestArtifact:{...latestArtifact,selection}}));
+  assert.equal(demoChatReply(request).artifactRequest.revision,true);
+  assert.equal(demoChatReply({...request,message:'修改海报标题'}).mode,'reply');
+  const sections=[{label:'正文',text:'x'.repeat(20000)}];
+  assert.equal(normalizeRequest({...context(),previousArtifact:{title:'长文档',sections}}).previousArtifact.sections[0].text.length,20000);
+});

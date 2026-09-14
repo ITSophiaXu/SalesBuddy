@@ -68,7 +68,7 @@ export function taskWorkflow(chat,c) {
   if(!chat?.tracked)return null;
   return {goal:chat.goal||chat.title,path:'cowork',reason:'当前任务目标、人工安排与真实反馈',steps:openActions(chat).slice(0,10).map(a=>`${a.owner}：${a.title}`),requiredHumanAction:openActions(chat).slice(0,3).map(a=>`${a.title}；负责人 ${a.owner}；需要带回 ${a.expected}${a.dueAt?'；时间 '+a.dueAt:''}`).join('\n').slice(0,2000),latestFeedback:(chat.feedback||[]).slice(-10).map(f=>({...f,source:f.source.slice(0,300)})),marketingPaused:!!c?.doNotContact||c?.serviceIssue?.status==='open'};
 }
-export function conversationForArtifact(state,id){return (state.conversations||[]).find(c=>c.messages.some(m=>[m.artifactId,m.posterId,m.savedArtifactId].includes(id)));}
+export function conversationForArtifact(state,id){return (state.conversations||[]).find(c=>(c.artifactIds?.includes(id)||c.messages.some(m=>[m.artifactId,m.posterId,m.savedArtifactId].includes(id))));}
 export function parseWorkspaceRoute(hash) {
   const [page,query='']=String(hash||'').replace(/^#/,'').split('?');
   return {page:page||'home',conversationId:new URLSearchParams(query).get('conversation')||undefined};

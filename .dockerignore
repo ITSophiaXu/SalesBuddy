@@ -32,3 +32,12 @@ scripts/*
 !task-ui.js
 !customer-profile.js
 !profile-ui.js
+
+!experience-model.js
+!experience-ui.js
+!experience.css
+
+!artifact-workbench.js
+!workbench-ui.js
+
+!vehicle-comparison.js
