@@ -17,3 +17,6 @@ releases/
 *.p12
 *.bundle
 *.patch
+.*-tests.txt
+.ux-*.txt
+.presentation-build/

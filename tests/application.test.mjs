@@ -400,8 +400,13 @@ test('短话术直接回复，保存为素材不新增任务，用户可再加�
   await click('chat-new');navigate('chat');const before=currentState();
   await sayChat('帮 Sarah 写一句英文跟进话术');
   const m=latestChat().messages.at(-1);assert.equal(m.mode,'reply');assert.match(m.content,/Hi Sarah/);
+  assert.match(main(),/class="chat-message-actions" role="group" aria-label="回复操作"/);
+  assert.match(main(),/<button type="button" class="chat-message-action" data-act="chat-copy"/);
+  assert.match(main(),/class="chat-header-actions" role="group" aria-label="对话操作"/);
+  assert.match(main(),/id="cowork-chat-input" maxlength="6000" rows="2"/);
   assert.equal(currentState().tasks.length,before.tasks.length);assert.equal(currentState().artifacts.length,before.artifacts.length);
   await click('chat-save',{id:m.id});assert.equal(currentState().artifacts.length,before.artifacts.length+1);assert.equal(currentState().tasks.length,before.tasks.length);
+  assert.match(main(),/class="chat-message-action" data-act="artifact"/);
   await click('chat-save',{id:m.id});assert.equal(currentState().artifacts.length,before.artifacts.length+1);
   await click('chat-track');assert.equal(latestChat().tracked,true);navigate('desk');assert.match(main(),/帮 Sarah 写一句/);
 });
