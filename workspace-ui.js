@@ -10,7 +10,7 @@ export function createWorkspaceUI(api) {
   const marketOptions=()=>Object.entries(markets).map(([key,label])=>`<option value="${key}" ${ui().market===key?'selected':''}>${label}</option>`).join('');
   const tabs=(entries,selected)=>`<nav class="ux-tabs" aria-label="当前工作区视图">${entries.map(([id,label])=>`<a href="#${id}" ${selected===id?'aria-current="page"':''}>${label}</a>`).join('')}</nav>`;
   function deskTabs(){return tabs([['desk','任务'],['inbox','待办'],['deliverables','成果'],['automations','定时任务']],['work','workspace'].includes(ui().page)?'desk':ui().page);}
-  function dataTabs(){return tabs([['connections','数据连接'],['knowledge','品牌与知识']],ui().page);}
+  function dataTabs(){return tabs([['connections','数据连接'],['knowledge','品牌与知识'],['ecosystem','插件、Skills 与 MCP']],ui().page);}
   function home(){
     const recent=(state().conversations||[]).filter(c=>c.messages.length).slice(0,3);
     const needs=workspaceItems(state()).filter(w=>w.id==='review').length;

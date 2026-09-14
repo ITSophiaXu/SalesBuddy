@@ -271,6 +271,7 @@ export function createChatUI(api) {
     if(act==='chat-select'){api.closeModal?.();if(state().conversations.some(c=>c.id===data.id)){ui().conversationId=data.id;scrollNext=true;api.navigate('chat');}}
     if(act==='chat-send-home')await send(document.querySelector('#cowork-home-input').value,{customerId:document.querySelector('#cowork-home-customer').value,fromHome:true});
     if(act==='chat-example'){
+      if(ui().homeLanding){homeDraft=data.example;const input=document.querySelector('#cowork-home-input');input.value=homeDraft;input.focus();return true;}
       const chat=current()||makeConversation();drafts.set(chat.id,data.example);chat.draft=data.example;api.save();document.querySelector('#cowork-chat-input').value=data.example;document.querySelector('#cowork-chat-input').focus();
     }
     if(act==='chat-stop'){

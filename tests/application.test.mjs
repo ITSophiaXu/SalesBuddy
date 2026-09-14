@@ -164,6 +164,9 @@ test('模型失败保留失败任务，不生成模板；重试可重新完成',
   assert.equal(currentState().tasks[0].status,'review');assert.equal(currentState().artifacts.length,before+1);
 });
 test('活动包同时保存关联的文案与海报，海报编辑后重新审核',async()=>{
+  navigate('campaigns');await listeners.change({target:{dataset:{change:'market'},value:'all'}});
+  assert.match(main(),/class="card campaign-card"/);assert.match(main(),/data-act="cw-campaign"/);
+  assert.doesNotMatch(main(),/按需要、授权与服务状态分群/);
   const campaign=currentState().campaigns[0];
   await click('campaign-package',{id:campaign.id});
   navigate('chat');const count=currentState().conversations.length;
@@ -265,6 +268,34 @@ test('首页对话保留 Markdown 和真实事件，不因普通流式回复创�
   assert.deepEqual(reply.execution.map(e=>e.stage),['session_ready','complete']);
   assert.equal(currentState().tasks.length,count);
 });
+
+test('恢复的首页即使有历史也显示截图入口，从大输入框发送后能看到回复并继续原会话',async()=>{
+  navigate('home');
+  const original=currentState(),content=main();
+  assert.match(content,/今天，一起推进什么？/);
+  assert.match(content,/记录沟通，完善画像/);
+  assert.match(content,/id="cowork-home-customer"/);
+  assert.doesNotMatch(content,/xp-dashboard|id="cowork-chat-input"/);
+  const sidebar=content.slice(content.indexOf('<aside'),content.indexOf('</aside>'));
+  for(const route of ['home','desk','customers','inventory','campaigns','connections'])assert.match(sidebar,new RegExp('href="#'+route+'"'));
+  assert.doesNotMatch(sidebar,/data-change="persona"/);
+  const example='帮 Sarah 写一句简短的英文跟进话术';
+  await click('chat-example',{example});
+  assert.equal(element('#cowork-home-input').value,example);
+  assert.equal(currentState().conversations.length,original.conversations.length);
+  element('#cowork-home-customer').value='c1';
+  await click('chat-send-home');navigate(location.hash.slice(1));
+  const chat=latestChat();
+  assert.equal(currentState().conversations.length,original.conversations.length+1);
+  assert.equal(chat.customerId,'c1');assert.equal(chat.messages.at(-1).mode,'reply');
+  assert.equal(currentState().artifacts.length,original.artifacts.length);
+  assert.match(main(),/xp-home-conversation/);assert.match(main(),/chat-message-actions/);
+  assert.doesNotMatch(main(),/id="cowork-home-input"|xp-dashboard|aria-label="成果工作台"/);
+  navigate('home');assert.match(main(),/今天，一起推进什么？/);
+  await click('chat-select',{id:chat.id});navigate(location.hash.slice(1));
+  assert.match(main(),/帮 Sarah 写一句简短的英文跟进话术/);
+  assert.equal(currentState().conversations.length,original.conversations.length+1);
+});
 const latestChat=()=>currentState().conversations[0];
 
 test('对话整理画像，经销售核对保存，后续车源方案实际使用更新内容',async()=>{
@@ -298,8 +329,8 @@ test('画像草稿暂不记录不会改变客户，未选客户不会默认写�
   await click('profile-discard',{chat:chat.id,message:m.id});assert.equal(latestChat().messages.at(-1).profileProposal.status,'discarded');assert.equal(JSON.stringify(currentState().customers),before);
 });
 
-test('个人智能首页有明显对话入口，普通问答连续保存而不产生交付物',async()=>{
-  navigate('home');assert.match(main(),/data-act="chat-new"/);assert.doesNotMatch(main(),/class="cw-objectives"/);assert.match(main(),/aria-label="主导航"/);
+test('AI 协作首页有明显对话入口，普通问答连续保存而不产生交付物',async()=>{
+  navigate('home');assert.match(main(),/id="cowork-home-input"/);assert.doesNotMatch(main(),/class="cw-objectives"/);assert.match(main(),/aria-label="主导航"/);
   await click('chat-new');navigate('chat');
   const before=currentState();await sayChat('你好');await sayChat('为什么客户试驾后不回复？');
   assert.equal(latestChat().messages.length,4);assert.equal(latestChat().customerId,'');
@@ -476,13 +507,13 @@ test('资料选择真实影响对话和成果请求，任务、搜索和成果�
 test('旧成果准备记录进入 Cowork，反复打开不会创建重复任务',async()=>{
   const old=currentState().tasks.find(t=>!t.conversationId&&!t.workId),before=currentState().conversations.length;
   assert.ok(old);await click('select-task',{id:old.id});navigate(location.hash.slice(1));
-  assert.equal(currentState().conversations.length,before+1);assert.match(main(),/Cowork/);assert.match(main(),/今日工作/);
+  assert.equal(currentState().conversations.length,before+1);assert.match(main(),/Cowork/);assert.match(main(),/AI 协作/);
   const linked=currentState().tasks.find(t=>t.id===old.id).conversationId;assert.ok(linked);
   await click('select-task',{id:old.id});assert.equal(currentState().conversations.length,before+1);assert.equal(location.hash,'#chat?conversation='+linked);
 });
 
-test('角色切换持久保存：首页、专业工作流及市场范围随之改变',async()=>{
-  navigate('home');listeners.change({target:{dataset:{change:'persona'},value:'marketing'}});
+test('工作台角色切换持久保存，专业工作流及市场范围随之改变',async()=>{
+  navigate('desk');listeners.change({target:{dataset:{change:'persona'},value:'marketing'}});
   assert.equal(currentState().persona,'marketing');assert.match(main(),/策划营销活动/);assert.doesNotMatch(main(),/data-id="reactivation"/);
   listeners.change({target:{dataset:{change:'market'},value:'AE'}});
   await click('xp-workflow',{id:'campaign'});assert.match(modal(),/store:AE" selected/);
@@ -491,7 +522,7 @@ test('角色切换持久保存：首页、专业工作流及市场范围随之�
   assert.ok(main().indexOf('aria-label="成果工作台"')<main().indexOf('aria-label="Cowork 对话"'));
   await sayChat(chat.draft);chat=latestChat();assert.ok(chat.messages.at(-1).artifactId);assert.ok(chat.messages.at(-1).posterId);
   const last=requests.at(-1);assert.equal(last.customer.market,'AE');assert.equal(last.scope,'store');
-  listeners.change({target:{dataset:{change:'persona'},value:'regional'}});navigate('home');assert.match(main(),/经营诊断/);assert.doesNotMatch(main(),/data-id="campaign"/);
+  listeners.change({target:{dataset:{change:'persona'},value:'regional'}});navigate('desk');assert.match(main(),/经营诊断/);assert.doesNotMatch(main(),/data-id="campaign"/);
   await click('xp-workflow',{id:'regional-review',market:'US'});await submit('xp-workflow-form',{subject:'store:US',goal:'关注未结服务问题'},{id:'regional-review'});navigate(location.hash.slice(1));await sayChat(latestChat().draft);
   assert.equal(latestChat().persona,'regional');assert.ok(latestChat().messages.at(-1).artifactId);assert.equal(requests.at(-1).customer.market,'US');
   listeners.change({target:{dataset:{change:'persona'},value:'sales'}});listeners.change({target:{dataset:{change:'market'},value:'all'}});
@@ -532,10 +563,10 @@ test('生态 Skill 的门店要求用于新任务，停用后阻止创建，MCP 
   assert.equal(currentState().ecosystem.mcp.at(-1).status,'configured');assert.match(main(),/已配置 · 未连接/);
 });
 
-test('首页只有一个完整对话区，普通问答保持首页，返回时恢复同一段对话',async()=>{
+test('普通问答只有一个完整对话区，返回首页后可从历史继续同一段对话',async()=>{
   await click('chat-new');assert.match(location.hash,/^#home\?conversation=/);navigate(location.hash.slice(1));
   const before=currentState(),id=latestChat().id;
-  assert.match(main(),/xp-home-conversation/);assert.match(main(),/需要你推进/);
+  assert.match(main(),/xp-home-conversation/);assert.doesNotMatch(main(),/需要你推进|xp-dashboard/);
   assert.equal((main().match(/aria-label="Cowork 对话"/g)||[]).length,1);
   assert.equal((main().match(/id="cowork-chat-input"/g)||[]).length,1);
   assert.doesNotMatch(main(),/aria-label="成果工作台"|xp-reactive-layout|对话工作区/);
@@ -543,7 +574,8 @@ test('首页只有一个完整对话区，普通问答保持首页，返回时�
   assert.equal(latestChat().id,id);assert.equal(latestChat().messages.length,4);assert.match(location.hash,/^#home\?conversation=/);
   assert.equal(currentState().artifacts.length,before.artifacts.length);assert.equal(currentState().tasks.length,before.tasks.length);
   listeners.input({target:{id:'cowork-chat-input',dataset:{},value:'我还想问一个问题'}});
-  navigate('desk');navigate('home');assert.match(main(),/我还想问一个问题/);assert.match(main(),/为什么客户试驾后不回复/);
+  navigate('desk');navigate('home');assert.match(main(),/今天，一起推进什么/);assert.match(main(),/id="cowork-home-input"/);
+  await click('chat-select',{id});navigate(location.hash.slice(1));assert.match(main(),/我还想问一个问题/);assert.match(main(),/为什么客户试驾后不回复/);
   assert.equal(currentState().homeConversationId,id);
   navigate('chat?conversation='+id);assert.match(main(),/xp-home-conversation/);assert.doesNotMatch(main(),/xp-reactive-layout/);
 });
@@ -650,7 +682,7 @@ test('成果选择仅限当前任务，讨论问题不会创建或改写任何�
 });
 
 test('销售通过对话生成图文车型对比，并在右侧改变比较重点，原版和客户记录保留',async()=>{
-  await click('chat-new');navigate('home');assert.match(main(),/制作车型对比/);
+  navigate('desk');assert.match(main(),/制作车型对比/);await click('chat-new');navigate(location.hash.slice(1));
   const customers=JSON.stringify(currentState().customers);
   await sayChat('为 Sarah 比较 Tesla Model Y 和 Toyota RAV4 Hybrid，侧重家庭空间、购车预算和补能便利，生成中文车型对比方案');
   const first=latestChat().messages.at(-1),original=currentState().artifacts.find(a=>a.id===first.artifactId);
@@ -665,4 +697,19 @@ test('销售通过对话生成图文车型对比，并在右侧改变比较重�
   await click('chat-canvas-edit',{id:next.id});assert.match(main(),/对比摘要/);
   await submit('chat-canvas-form',{title:next.title,...Object.fromEntries(next.sections.map((s,n)=>['section-'+n,s.label==='summary'?'本次先核实家庭补能条件，再比较日常使用成本。':s.text]))},{id:next.id});
   assert.match(main(),/本次先核实家庭补能条件/);assert.match(main(),/comparison-sheet/);assert.equal(currentState().artifacts.find(a=>a.id===latestChat().selectedArtifactId).artifactVersion,3);
+});
+
+test('车型对比入口说明文字指定方式，填写车型后带入工作台草稿',async()=>{
+  navigate('desk');await listeners.change({target:{dataset:{change:'market'},value:'all'}});
+  await click('xp-workflow',{id:'vehicle-comparison'});
+  assert.match(modal(),/车型与比较重点（选填）/);
+  assert.match(modal(),/当前通过文字指定 2–3 款同市场车型，不是勾选列表/);
+  assert.match(modal(),/Tesla Model Y、Toyota RAV4 Hybrid/);
+  const goal='比较 Tesla Model Y 和 Toyota RAV4 Hybrid，重点看家庭空间、预算和补能便利。';
+  const calls=chatRequests.length;
+  await submit('xp-workflow-form',{subject:'c1',goal},{id:'vehicle-comparison'});
+  navigate(location.hash.slice(1));
+  assert.equal(latestChat().customerId,'c1');assert.equal(latestChat().workflowId,'vehicle-comparison');
+  assert.ok(latestChat().draft.includes(goal));assert.equal(chatRequests.length,calls);
+  assert.match(main(),/id="cowork-chat-input"/);
 });
